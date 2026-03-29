@@ -1,0 +1,8 @@
+DROP INDEX IF EXISTS idx_users_store_id;
+DROP INDEX IF EXISTS idx_users_branch_id;
+DROP INDEX IF EXISTS idx_users_role_id;
+ALTER TABLE users DROP COLUMN IF EXISTS phone;
+ALTER TABLE users DROP COLUMN IF EXISTS role_id;
+ALTER TABLE users DROP COLUMN IF EXISTS branch_id;
+ALTER TABLE users DROP COLUMN IF EXISTS store_id;
+DROP TABLE IF EXISTS users;

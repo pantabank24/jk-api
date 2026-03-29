@@ -1,0 +1,1 @@
+ALTER TABLE gold_types ADD COLUMN IF NOT EXISTS formula_steps TEXT NOT NULL DEFAULT '[]';
