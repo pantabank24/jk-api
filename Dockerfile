@@ -6,6 +6,8 @@ WORKDIR /app
 # Install dependencies
 RUN apk add --no-cache gcc musl-dev
 
+RUN curl -L https://github.com/golang-migrate/migrate/releases/download/v4.17.0/migrate.linux-amd64.tar.gz | tar xvz && mv migrate /usr/bin/migrate
+
 # Copy go mod files
 COPY go.mod go.sum ./
 RUN go mod download
