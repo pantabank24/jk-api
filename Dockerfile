@@ -4,7 +4,7 @@ FROM golang:1.26-alpine AS builder
 WORKDIR /app
 
 # Install dependencies
-RUN apk add --no-cache gcc musl-dev
+RUN apk add --no-cache gcc musl-dev curl
 
 RUN curl -L https://github.com/golang-migrate/migrate/releases/download/v4.17.0/migrate.linux-amd64.tar.gz | tar xvz && mv migrate /usr/bin/migrate
 
