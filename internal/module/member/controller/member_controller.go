@@ -7,6 +7,7 @@ import (
 	memberUC "jk-api/internal/module/member/usecase"
 	userUC "jk-api/internal/module/user/usecase"
 	"jk-api/pkg/response"
+	"jk-api/pkg/upload"
 
 	"github.com/gofiber/fiber/v2"
 )
@@ -27,8 +28,8 @@ type createMemberBody struct {
 	Lname    string  `json:"lname"`
 	Phone    string  `json:"phone"`
 	Credits  float64 `json:"credits"`
-	StoreID  uint    `json:"store_id"`
-	BranchID uint    `json:"branch_id"`
+	StoreID  *uint   `json:"store_id"`
+	BranchID *uint   `json:"branch_id"`
 	// User account fields (optional — if provided, creates a linked user account)
 	Email    string `json:"email"`
 	Password string `json:"password"`
@@ -45,15 +46,11 @@ func (ctrl *MemberController) CreateMember(c *fiber.Ctx) error {
 	}
 
 	// Auto-fill store/branch from JWT if not provided
-	if body.StoreID == 0 {
-		if storeID := middleware.GetStoreID(c); storeID != nil {
-			body.StoreID = *storeID
-		}
+	if body.StoreID == nil {
+		body.StoreID = middleware.GetStoreID(c)
 	}
-	if body.BranchID == 0 {
-		if branchID := middleware.GetBranchID(c); branchID != nil {
-			body.BranchID = *branchID
-		}
+	if body.BranchID == nil {
+		body.BranchID = middleware.GetBranchID(c)
 	}
 
 	memberReq := &memberUC.CreateMemberRequest{
@@ -73,14 +70,8 @@ func (ctrl *MemberController) CreateMember(c *fiber.Ctx) error {
 			Password: body.Password,
 			Phone:    body.Phone,
 			RoleID:   body.RoleID,
-		}
-		if body.StoreID != 0 {
-			storeID := body.StoreID
-			userReq.StoreID = &storeID
-		}
-		if body.BranchID != 0 {
-			branchID := body.BranchID
-			userReq.BranchID = &branchID
+			StoreID:  body.StoreID,
+			BranchID: body.BranchID,
 		}
 
 		user, err := ctrl.userUsecase.CreateUser(userReq)
@@ -122,7 +113,14 @@ func (ctrl *MemberController) GetAllMembers(c *fiber.Ctx) error {
 		}
 	}
 
-	members, total, err := ctrl.memberUsecase.GetAllMembers(storeID, branchID, page, limit, search)
+	var status *int
+	if s := c.Query("status"); s != "" {
+		if v, err := strconv.Atoi(s); err == nil {
+			status = &v
+		}
+	}
+
+	members, total, err := ctrl.memberUsecase.GetAllMembers(storeID, branchID, page, limit, search, status)
 	if err != nil {
 		return response.InternalServerError(c, err.Error())
 	}
@@ -172,6 +170,24 @@ func (ctrl *MemberController) DeleteMember(c *fiber.Ctx) error {
 	return response.Success(c, "Member deleted", nil)
 }
 
+func (ctrl *MemberController) UploadImage(c *fiber.Ctx) error {
+	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
+	if err != nil {
+		return response.BadRequest(c, "Invalid member ID")
+	}
+
+	path, err := upload.SaveFile(c, "image", "members")
+	if err != nil {
+		return response.BadRequest(c, err.Error())
+	}
+
+	member, err := ctrl.memberUsecase.UpdateImage(uint(id), path)
+	if err != nil {
+		return response.BadRequest(c, err.Error())
+	}
+	return response.Success(c, "Image uploaded", member)
+}
+
 func (ctrl *MemberController) AddCredit(c *fiber.Ctx) error {
 	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
 	if err != nil {
@@ -185,12 +201,8 @@ func (ctrl *MemberController) AddCredit(c *fiber.Ctx) error {
 
 	userID := middleware.GetUserID(c)
 	req.CreatedBy = &userID
-	if storeID := middleware.GetStoreID(c); storeID != nil {
-		req.StoreID = *storeID
-	}
-	if branchID := middleware.GetBranchID(c); branchID != nil {
-		req.BranchID = *branchID
-	}
+	req.StoreID = middleware.GetStoreID(c)
+	req.BranchID = middleware.GetBranchID(c)
 
 	member, err := ctrl.memberUsecase.AddCredit(uint(id), &req)
 	if err != nil {

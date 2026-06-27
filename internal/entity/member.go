@@ -10,9 +10,9 @@ type Member struct {
 	ID        uint           `json:"id" gorm:"primaryKey"`
 	UserID    *uint          `json:"user_id,omitempty" gorm:"uniqueIndex;index"`
 	User      *User          `json:"user,omitempty" gorm:"foreignKey:UserID"`
-	StoreID   uint           `json:"store_id" gorm:"not null;index"`
+	StoreID   *uint          `json:"store_id" gorm:"index"`
 	Store     *Store         `json:"store,omitempty" gorm:"foreignKey:StoreID"`
-	BranchID  uint           `json:"branch_id" gorm:"not null;index"`
+	BranchID  *uint          `json:"branch_id" gorm:"index"`
 	Branch    *Branch        `json:"branch,omitempty" gorm:"foreignKey:BranchID"`
 	Code      string         `json:"code" gorm:"type:varchar(20);uniqueIndex;not null"`
 	Image     string         `json:"image" gorm:"type:varchar(500);default:''"`

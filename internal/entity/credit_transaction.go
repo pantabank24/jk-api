@@ -6,8 +6,8 @@ type CreditTransaction struct {
 	ID          uint      `json:"id" gorm:"primaryKey"`
 	MemberID    uint      `json:"member_id" gorm:"not null;index"`
 	Member      *Member   `json:"member,omitempty" gorm:"foreignKey:MemberID"`
-	StoreID     uint      `json:"store_id" gorm:"not null;index"`
-	BranchID    uint      `json:"branch_id" gorm:"not null;index"`
+	StoreID     *uint     `json:"store_id" gorm:"index"`
+	BranchID    *uint     `json:"branch_id" gorm:"index"`
 	Action      int       `json:"action" gorm:"not null;default:0"`
 	Amount      float64   `json:"amount" gorm:"type:decimal(12,2);not null;default:0"`
 	Balance     float64   `json:"balance" gorm:"type:decimal(12,2);not null;default:0"`

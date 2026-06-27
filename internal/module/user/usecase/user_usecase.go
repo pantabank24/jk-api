@@ -9,12 +9,17 @@ import (
 	jwtPkg "jk-api/pkg/jwt"
 )
 
+type UserFilter = repository.UserFilter
+
 type UserUsecase interface {
 	CreateUser(req *CreateUserRequest) (*entity.User, error)
-	GetAllUsers(page, limit int) ([]entity.User, int64, error)
+	GetAllUsers(page, limit int, f UserFilter) ([]entity.User, int64, error)
 	GetUserByID(id uint) (*entity.User, error)
 	UpdateUser(id uint, req *UpdateUserRequest) (*entity.User, error)
 	DeleteUser(id uint) error
+	CheckEmailExists(email string) bool
+	CheckStoreHasOwner(storeID uint) bool
+	UpdateAvatar(id uint, path string) (*entity.User, error)
 }
 
 type CreateUserRequest struct {
@@ -92,14 +97,14 @@ func (u *userUsecase) CreateUser(req *CreateUserRequest) (*entity.User, error) {
 	return user, nil
 }
 
-func (u *userUsecase) GetAllUsers(page, limit int) ([]entity.User, int64, error) {
+func (u *userUsecase) GetAllUsers(page, limit int, f UserFilter) ([]entity.User, int64, error) {
 	if page < 1 {
 		page = 1
 	}
 	if limit < 1 || limit > 100 {
 		limit = 10
 	}
-	return u.userRepo.FindAll(page, limit)
+	return u.userRepo.FindAll(page, limit, f)
 }
 
 func (u *userUsecase) GetUserByID(id uint) (*entity.User, error) {
@@ -165,4 +170,16 @@ func (u *userUsecase) DeleteUser(id uint) error {
 		return errors.New("user not found")
 	}
 	return u.userRepo.Delete(id)
+}
+
+func (u *userUsecase) UpdateAvatar(id uint, path string) (*entity.User, error) {
+	return u.userRepo.UpdateAvatar(id, path)
+}
+
+func (u *userUsecase) CheckEmailExists(email string) bool {
+	return u.userRepo.ExistsByEmail(email)
+}
+
+func (u *userUsecase) CheckStoreHasOwner(storeID uint) bool {
+	return u.userRepo.HasOwnerForStore(storeID)
 }

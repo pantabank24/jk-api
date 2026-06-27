@@ -31,6 +31,7 @@ func SetupMemberRoutes(v1 fiber.Router, db *gorm.DB, cfg *config.Config) {
 		members.Get("/:id", middleware.RequirePermission(db, "members.read"), ctrl.GetMemberByID)
 		members.Post("/", middleware.RequirePermission(db, "members.create"), ctrl.CreateMember)
 		members.Put("/:id", middleware.RequirePermission(db, "members.update"), ctrl.UpdateMember)
+		members.Post("/:id/image", middleware.RequirePermission(db, "members.update"), ctrl.UploadImage)
 		members.Delete("/:id", middleware.RequirePermission(db, "members.delete"), ctrl.DeleteMember)
 		members.Post("/:id/credit", middleware.RequirePermission(db, "credits.update"), ctrl.AddCredit)
 		members.Get("/:id/transactions", middleware.RequirePermission(db, "credits.read"), ctrl.GetCreditTransactions)

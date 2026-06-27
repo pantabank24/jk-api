@@ -22,10 +22,13 @@ func SetupUserRoutes(v1 fiber.Router, db *gorm.DB, cfg *config.Config) {
 	// User routes group (all protected)
 	users := v1.Group("/users", middleware.AuthMiddleware(cfg))
 	{
+		users.Get("/check-email", userController.CheckEmail)
+		users.Get("/check-store-owner", userController.CheckStoreOwner)
 		users.Post("/", middleware.RequirePermission(db, "users.create"), userController.CreateUser)
 		users.Get("/", middleware.RequirePermission(db, "users.read"), userController.GetAllUsers)
 		users.Get("/:id", middleware.RequirePermission(db, "users.read"), userController.GetUserByID)
 		users.Put("/:id", middleware.RequirePermission(db, "users.update"), userController.UpdateUser)
+		users.Post("/:id/avatar", middleware.RequirePermission(db, "users.update"), userController.UploadAvatar)
 		users.Delete("/:id", middleware.RequirePermission(db, "users.delete"), userController.DeleteUser)
 	}
 }
