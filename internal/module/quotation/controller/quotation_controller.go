@@ -12,14 +12,16 @@ import (
 	"jk-api/pkg/response"
 
 	"github.com/gofiber/fiber/v2"
+	"gorm.io/gorm"
 )
 
 type QuotationController struct {
 	quotationUsecase usecase.QuotationUsecase
+	db               *gorm.DB
 }
 
-func NewQuotationController(quotationUsecase usecase.QuotationUsecase) *QuotationController {
-	return &QuotationController{quotationUsecase: quotationUsecase}
+func NewQuotationController(quotationUsecase usecase.QuotationUsecase, db *gorm.DB) *QuotationController {
+	return &QuotationController{quotationUsecase: quotationUsecase, db: db}
 }
 
 func (ctrl *QuotationController) CreateQuotation(c *fiber.Ctx) error {
@@ -50,8 +52,9 @@ func (ctrl *QuotationController) CreateQuotation(c *fiber.Ctx) error {
 	// master: StoreID/BranchID remain nil (allowed)
 	}
 
-	// master and owner can approve — auto-approve their own quotations
-	req.AutoApprove = roleName == "master" || roleName == "owner"
+	// Roles without credits.use permission bypass the credit check (master, owner, branch).
+	// Use strict lookup (no master shortcut) since credits.use is a constraint, not a privilege.
+	req.AutoApprove = !middleware.HasPermissionStrict(ctrl.db, c, "credits.use")
 	req.CreatedByUserID = middleware.GetUserID(c)
 
 	quotation, err := ctrl.quotationUsecase.CreateQuotation(&req)
@@ -74,6 +77,11 @@ func (ctrl *QuotationController) GetAllQuotations(c *fiber.Ctx) error {
 		roleName := middleware.GetRoleName(c)
 		if roleName != "owner" {
 			branchID = middleware.GetBranchID(c)
+		}
+		// Employee sees only their own quotations
+		if roleName == "employee" {
+			userID := middleware.GetUserID(c)
+			createdBy = userID
 		}
 	} else {
 		if sid := c.Query("store_id"); sid != "" {

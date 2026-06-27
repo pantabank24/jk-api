@@ -152,6 +152,12 @@ func (u *memberUsecase) AddCredit(id uint, req *CreditRequest) (*entity.Member, 
 		return nil, errors.New("member not found")
 	}
 
+	// Only allow credit management for members without a user account (regular customers)
+	// or members linked to an employee user. Owner/branch/master bypass credits on quotations.
+	if member.User != nil && member.User.Role != nil && member.User.Role.Name != "employee" {
+		return nil, errors.New("ไม่สามารถจัดการเครดิตของสมาชิกที่ไม่ได้ใช้ระบบเครดิต")
+	}
+
 	if req.Action == 0 { // deposit
 		member.Credits += req.Amount
 	} else if req.Action == 1 { // withdraw

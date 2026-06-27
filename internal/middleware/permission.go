@@ -8,6 +8,31 @@ import (
 	"gorm.io/gorm"
 )
 
+// HasPermission checks whether the current request's role has a given permission code.
+// Master always returns true. Does a single COUNT query for other roles.
+func HasPermission(db *gorm.DB, c *fiber.Ctx, code string) bool {
+	if GetRoleName(c) == "master" {
+		return true
+	}
+	return HasPermissionStrict(db, c, code)
+}
+
+// HasPermissionStrict checks whether the role has the permission via a pure DB lookup,
+// without granting master automatic access. Use this for permissions that represent
+// constraints or required behaviors rather than privileges (e.g. credits.use).
+func HasPermissionStrict(db *gorm.DB, c *fiber.Ctx, code string) bool {
+	roleID, ok := c.Locals("role_id").(uint)
+	if !ok || roleID == 0 {
+		return false
+	}
+	var count int64
+	db.Model(&entity.RolePermission{}).
+		Joins("JOIN permissions ON permissions.id = role_permissions.permission_id").
+		Where("role_permissions.role_id = ? AND permissions.code = ?", roleID, code).
+		Count(&count)
+	return count > 0
+}
+
 // RequirePermission checks if the current user's role has the required permission
 func RequirePermission(db *gorm.DB, permissionCode string) fiber.Handler {
 	return func(c *fiber.Ctx) error {

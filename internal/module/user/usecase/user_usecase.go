@@ -33,13 +33,16 @@ type CreateUserRequest struct {
 }
 
 type UpdateUserRequest struct {
-	Name     string `json:"name"`
-	Email    string `json:"email" validate:"omitempty,email"`
-	Phone    string `json:"phone"`
-	RoleID   *uint  `json:"role_id"`
-	StoreID  *uint  `json:"store_id"`
-	BranchID *uint  `json:"branch_id"`
-	IsActive *bool  `json:"is_active"`
+	Name        string `json:"name"`
+	Email       string `json:"email" validate:"omitempty,email"`
+	Password    string `json:"password"`
+	Phone       string `json:"phone"`
+	RoleID      *uint  `json:"role_id"`
+	StoreID     *uint  `json:"store_id"`
+	BranchID    *uint  `json:"branch_id"`
+	IsActive    *bool  `json:"is_active"`
+	ClearStore  bool   `json:"clear_store"`
+	ClearBranch bool   `json:"clear_branch"`
 }
 
 type userUsecase struct {
@@ -135,6 +138,13 @@ func (u *userUsecase) UpdateUser(id uint, req *UpdateUserRequest) (*entity.User,
 	if req.Name != "" {
 		user.Name = req.Name
 	}
+	if req.Password != "" {
+		hashed, err := jwtPkg.HashPassword(req.Password)
+		if err != nil {
+			return nil, errors.New("failed to hash password")
+		}
+		user.Password = hashed
+	}
 	if req.Email != "" {
 		existing, _ := u.userRepo.FindByEmail(req.Email)
 		if existing != nil && existing.ID != user.ID {
@@ -147,12 +157,21 @@ func (u *userUsecase) UpdateUser(id uint, req *UpdateUserRequest) (*entity.User,
 	}
 	if req.RoleID != nil {
 		user.RoleID = req.RoleID
+		// Auto-clear branch when switching to a role that doesn't need one
+		needsBranch, _ := u.requiresBranch(req.RoleID)
+		if !needsBranch {
+			user.BranchID = nil
+		}
 	}
 	if req.StoreID != nil {
 		user.StoreID = req.StoreID
+	} else if req.ClearStore {
+		user.StoreID = nil
 	}
 	if req.BranchID != nil {
 		user.BranchID = req.BranchID
+	} else if req.ClearBranch {
+		user.BranchID = nil
 	}
 	if req.IsActive != nil {
 		user.IsActive = *req.IsActive

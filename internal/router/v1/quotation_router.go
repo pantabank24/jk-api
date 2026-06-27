@@ -18,7 +18,7 @@ func SetupQuotationRoutes(v1 fiber.Router, db *gorm.DB, cfg *config.Config) {
 	mRepo := memberRepo.NewMemberRepository(db)
 	nRepo := notifRepo.NewNotificationRepository(db)
 	uc := quotationUC.NewQuotationUsecase(qRepo, mRepo, nRepo)
-	ctrl := quotationCtrl.NewQuotationController(uc)
+	ctrl := quotationCtrl.NewQuotationController(uc, db)
 
 	quotations := v1.Group("/quotations", middleware.AuthMiddleware(cfg))
 	{

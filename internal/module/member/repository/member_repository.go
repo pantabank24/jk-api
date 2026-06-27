@@ -55,7 +55,7 @@ func (r *memberRepository) FindAll(storeID *uint, branchID *uint, page, limit in
 
 	query.Count(&total)
 	offset := (page - 1) * limit
-	err := query.Preload("Store").Preload("Branch").
+	err := query.Preload("Store").Preload("Branch").Preload("User").Preload("User.Role").
 		Offset(offset).Limit(limit).Order("id DESC").Find(&members).Error
 	return members, total, err
 }

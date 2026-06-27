@@ -133,40 +133,14 @@ func (u *quotationUsecase) CreateQuotation(req *CreateQuotationRequest) (*entity
 		return nil, err
 	}
 
-	// Auto-approved: deduct credits immediately
+	// Auto-approved (non-employee roles bypass credit deduction): just notify
 	if req.AutoApprove && quotation.CreatedBy != nil {
-		member, err := u.memberRepo.FindByUserID(*quotation.CreatedBy)
-		if err == nil && member != nil {
-			newBalance := member.Credits - quotation.TotalAmount
-			if newBalance < 0 {
-				newBalance = 0
-			}
-			member.Credits = newBalance
-			_ = u.memberRepo.Update(member)
-			_ = u.memberRepo.CreateCreditTransaction(&entity.CreditTransaction{
-				MemberID:    member.ID,
-				StoreID:     member.StoreID,
-				BranchID:    member.BranchID,
-				Action:      1, // withdraw
-				Amount:      quotation.TotalAmount,
-				Balance:     newBalance,
-				Description: "หักเครดิตจากใบเสนอราคา " + quotation.Code,
-				CreatedBy:   quotation.CreatedBy,
-			})
-			_ = u.notifRepo.Create(&entity.Notification{
-				UserID: *quotation.CreatedBy,
-				Type:   "quotation_approved",
-				Title:  "ใบเสนอราคาได้รับการอนุมัติ",
-				Body:   fmt.Sprintf("ใบเสนอราคา %s ได้รับการอนุมัติ หักเครดิต %.2f บาท คงเหลือ %.2f บาท", quotation.Code, quotation.TotalAmount, newBalance),
-			})
-		} else {
-			_ = u.notifRepo.Create(&entity.Notification{
-				UserID: *quotation.CreatedBy,
-				Type:   "quotation_approved",
-				Title:  "ใบเสนอราคาได้รับการอนุมัติ",
-				Body:   fmt.Sprintf("ใบเสนอราคา %s ได้รับการอนุมัติแล้ว", quotation.Code),
-			})
-		}
+		_ = u.notifRepo.Create(&entity.Notification{
+			UserID: *quotation.CreatedBy,
+			Type:   "quotation_approved",
+			Title:  "ใบเสนอราคาได้รับการอนุมัติ",
+			Body:   fmt.Sprintf("ใบเสนอราคา %s ได้รับการอนุมัติแล้ว", quotation.Code),
+		})
 	}
 
 	return quotation, nil
