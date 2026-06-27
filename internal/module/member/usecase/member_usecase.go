@@ -11,18 +11,19 @@ import (
 
 type MemberUsecase interface {
 	CreateMember(req *CreateMemberRequest) (*entity.Member, error)
-	GetAllMembers(storeID *uint, branchID *uint, page, limit int, search string) ([]entity.Member, int64, error)
+	GetAllMembers(storeID *uint, branchID *uint, page, limit int, search string, status *int) ([]entity.Member, int64, error)
 	GetMemberByID(id uint) (*entity.Member, error)
 	UpdateMember(id uint, req *UpdateMemberRequest) (*entity.Member, error)
 	DeleteMember(id uint) error
+	UpdateImage(id uint, path string) (*entity.Member, error)
 	AddCredit(id uint, req *CreditRequest) (*entity.Member, error)
 	GetCreditTransactions(memberID uint, page, limit int) ([]entity.CreditTransaction, int64, error)
 	GetAllCreditTransactions(storeID, branchID, memberID *uint, source string, page, limit int, search string) ([]entity.CreditTransaction, int64, error)
 }
 
 type CreateMemberRequest struct {
-	StoreID  uint    `json:"store_id"`
-	BranchID uint    `json:"branch_id"`
+	StoreID  *uint   `json:"store_id"`
+	BranchID *uint   `json:"branch_id"`
 	UserID   *uint   `json:"-"` // set by controller after creating user account
 	Fname    string  `json:"fname" validate:"required"`
 	Lname    string  `json:"lname" validate:"required"`
@@ -41,8 +42,8 @@ type CreditRequest struct {
 	Action      int     `json:"action" validate:"required"` // 0=deposit, 1=withdraw
 	Amount      float64 `json:"amount" validate:"required"`
 	Description string  `json:"description"`
-	StoreID     uint    `json:"store_id"`
-	BranchID    uint    `json:"branch_id"`
+	StoreID     *uint   `json:"store_id"`
+	BranchID    *uint   `json:"branch_id"`
 	CreatedBy   *uint   `json:"created_by"`
 }
 
@@ -94,14 +95,18 @@ func (u *memberUsecase) CreateMember(req *CreateMemberRequest) (*entity.Member, 
 	return member, nil
 }
 
-func (u *memberUsecase) GetAllMembers(storeID *uint, branchID *uint, page, limit int, search string) ([]entity.Member, int64, error) {
+func (u *memberUsecase) GetAllMembers(storeID *uint, branchID *uint, page, limit int, search string, status *int) ([]entity.Member, int64, error) {
 	if page < 1 {
 		page = 1
 	}
 	if limit < 1 || limit > 100 {
 		limit = 10
 	}
-	return u.memberRepo.FindAll(storeID, branchID, page, limit, search)
+	return u.memberRepo.FindAll(storeID, branchID, page, limit, search, status)
+}
+
+func (u *memberUsecase) UpdateImage(id uint, path string) (*entity.Member, error) {
+	return u.memberRepo.UpdateImage(id, path)
 }
 
 func (u *memberUsecase) GetMemberByID(id uint) (*entity.Member, error) {
@@ -160,11 +165,11 @@ func (u *memberUsecase) AddCredit(id uint, req *CreditRequest) (*entity.Member, 
 
 	// Fall back to member's own store/branch when caller (e.g. master) has none in JWT
 	storeID := req.StoreID
-	if storeID == 0 {
+	if storeID == nil {
 		storeID = member.StoreID
 	}
 	branchID := req.BranchID
-	if branchID == 0 {
+	if branchID == nil {
 		branchID = member.BranchID
 	}
 

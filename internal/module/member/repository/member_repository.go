@@ -10,12 +10,13 @@ import (
 
 type MemberRepository interface {
 	Create(member *entity.Member) error
-	FindAll(storeID *uint, branchID *uint, page, limit int, search string) ([]entity.Member, int64, error)
+	FindAll(storeID *uint, branchID *uint, page, limit int, search string, status *int) ([]entity.Member, int64, error)
 	FindByID(id uint) (*entity.Member, error)
 	FindByUserID(userID uint) (*entity.Member, error)
 	Update(member *entity.Member) error
 	Delete(id uint) error
 	GenerateCode() (string, error)
+	UpdateImage(id uint, path string) (*entity.Member, error)
 	CreateCreditTransaction(tx *entity.CreditTransaction) error
 	GetCreditTransactions(memberID uint, page, limit int) ([]entity.CreditTransaction, int64, error)
 	GetAllCreditTransactions(storeID, branchID, memberID *uint, source string, page, limit int, search string) ([]entity.CreditTransaction, int64, error)
@@ -33,7 +34,7 @@ func (r *memberRepository) Create(member *entity.Member) error {
 	return r.db.Create(member).Error
 }
 
-func (r *memberRepository) FindAll(storeID *uint, branchID *uint, page, limit int, search string) ([]entity.Member, int64, error) {
+func (r *memberRepository) FindAll(storeID *uint, branchID *uint, page, limit int, search string, status *int) ([]entity.Member, int64, error) {
 	var members []entity.Member
 	var total int64
 
@@ -44,6 +45,9 @@ func (r *memberRepository) FindAll(storeID *uint, branchID *uint, page, limit in
 	if branchID != nil {
 		query = query.Where("branch_id = ?", *branchID)
 	}
+	if status != nil {
+		query = query.Where("status = ?", *status)
+	}
 	if search != "" {
 		query = query.Where("fname ILIKE ? OR lname ILIKE ? OR phone ILIKE ? OR code ILIKE ?",
 			"%"+search+"%", "%"+search+"%", "%"+search+"%", "%"+search+"%")
@@ -51,7 +55,8 @@ func (r *memberRepository) FindAll(storeID *uint, branchID *uint, page, limit in
 
 	query.Count(&total)
 	offset := (page - 1) * limit
-	err := query.Offset(offset).Limit(limit).Order("id DESC").Find(&members).Error
+	err := query.Preload("Store").Preload("Branch").
+		Offset(offset).Limit(limit).Order("id DESC").Find(&members).Error
 	return members, total, err
 }
 
@@ -85,6 +90,13 @@ func (r *memberRepository) GenerateCode() (string, error) {
 	var count int64
 	r.db.Unscoped().Model(&entity.Member{}).Count(&count)
 	return fmt.Sprintf("MBR%04d", count+1), nil
+}
+
+func (r *memberRepository) UpdateImage(id uint, path string) (*entity.Member, error) {
+	if err := r.db.Model(&entity.Member{}).Where("id = ?", id).Update("image", path).Error; err != nil {
+		return nil, err
+	}
+	return r.FindByID(id)
 }
 
 func (r *memberRepository) CreateCreditTransaction(tx *entity.CreditTransaction) error {

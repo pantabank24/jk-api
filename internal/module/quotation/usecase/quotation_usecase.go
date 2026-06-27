@@ -85,7 +85,8 @@ func (u *quotationUsecase) CreateQuotation(req *CreateQuotationRequest) (*entity
 		member, err := u.memberRepo.FindByUserID(req.CreatedByUserID)
 		if err == nil && member != nil {
 			req.MemberID = &member.ID // always link member from token
-			if member.Credits < totalAmount {
+			// owner/master (AutoApprove=true) are exempt from credit requirement
+			if !req.AutoApprove && member.Credits < totalAmount {
 				return nil, errors.New("เครดิตไม่เพียงพอ กรุณาเติมเครดิตก่อนออกใบเสนอราคา")
 			}
 		}
