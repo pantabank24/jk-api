@@ -10,7 +10,7 @@ import (
 
 type MemberRepository interface {
 	Create(member *entity.Member) error
-	FindAll(storeID *uint, branchID *uint, page, limit int, search string, status *int) ([]entity.Member, int64, error)
+	FindAll(storeID *uint, branchID *uint, page, limit int, search string, status *int, memberType string) ([]entity.Member, int64, error)
 	FindByID(id uint) (*entity.Member, error)
 	FindByUserID(userID uint) (*entity.Member, error)
 	Update(member *entity.Member) error
@@ -34,7 +34,7 @@ func (r *memberRepository) Create(member *entity.Member) error {
 	return r.db.Create(member).Error
 }
 
-func (r *memberRepository) FindAll(storeID *uint, branchID *uint, page, limit int, search string, status *int) ([]entity.Member, int64, error) {
+func (r *memberRepository) FindAll(storeID *uint, branchID *uint, page, limit int, search string, status *int, memberType string) ([]entity.Member, int64, error) {
 	var members []entity.Member
 	var total int64
 
@@ -51,6 +51,12 @@ func (r *memberRepository) FindAll(storeID *uint, branchID *uint, page, limit in
 	if search != "" {
 		query = query.Where("fname ILIKE ? OR lname ILIKE ? OR phone ILIKE ? OR code ILIKE ?",
 			"%"+search+"%", "%"+search+"%", "%"+search+"%", "%"+search+"%")
+	}
+	switch memberType {
+	case "customer":
+		query = query.Where("members.user_id IS NULL")
+	case "staff":
+		query = query.Where("members.user_id IS NOT NULL")
 	}
 
 	query.Count(&total)

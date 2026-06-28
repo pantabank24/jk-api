@@ -80,8 +80,8 @@ func (ctrl *QuotationController) GetAllQuotations(c *fiber.Ctx) error {
 		}
 		// Employee sees only their own quotations
 		if roleName == "employee" {
-			userID := middleware.GetUserID(c)
-			createdBy = userID
+			uid := middleware.GetUserID(c)
+			createdBy = &uid
 		}
 	} else {
 		if sid := c.Query("store_id"); sid != "" {
@@ -101,10 +101,13 @@ func (ctrl *QuotationController) GetAllQuotations(c *fiber.Ctx) error {
 		status = &st
 	}
 
-	if cbId := c.Query("created_by"); cbId != "" {
-		id, _ := strconv.ParseUint(cbId, 10, 32)
-		uid := uint(id)
-		createdBy = &uid
+	// created_by query param is only allowed for non-employee roles (employee is always scoped to self)
+	if middleware.GetRoleName(c) != "employee" {
+		if cbId := c.Query("created_by"); cbId != "" {
+			id, _ := strconv.ParseUint(cbId, 10, 32)
+			uid := uint(id)
+			createdBy = &uid
+		}
 	}
 
 	quotations, total, err := ctrl.quotationUsecase.GetAllQuotations(storeID, branchID, createdBy, status, page, limit, search)

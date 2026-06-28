@@ -11,7 +11,7 @@ import (
 
 type MemberUsecase interface {
 	CreateMember(req *CreateMemberRequest) (*entity.Member, error)
-	GetAllMembers(storeID *uint, branchID *uint, page, limit int, search string, status *int) ([]entity.Member, int64, error)
+	GetAllMembers(storeID *uint, branchID *uint, page, limit int, search string, status *int, memberType string) ([]entity.Member, int64, error)
 	GetMemberByID(id uint) (*entity.Member, error)
 	UpdateMember(id uint, req *UpdateMemberRequest) (*entity.Member, error)
 	DeleteMember(id uint) error
@@ -95,14 +95,14 @@ func (u *memberUsecase) CreateMember(req *CreateMemberRequest) (*entity.Member, 
 	return member, nil
 }
 
-func (u *memberUsecase) GetAllMembers(storeID *uint, branchID *uint, page, limit int, search string, status *int) ([]entity.Member, int64, error) {
+func (u *memberUsecase) GetAllMembers(storeID *uint, branchID *uint, page, limit int, search string, status *int, memberType string) ([]entity.Member, int64, error) {
 	if page < 1 {
 		page = 1
 	}
 	if limit < 1 || limit > 100 {
 		limit = 10
 	}
-	return u.memberRepo.FindAll(storeID, branchID, page, limit, search, status)
+	return u.memberRepo.FindAll(storeID, branchID, page, limit, search, status, memberType)
 }
 
 func (u *memberUsecase) UpdateImage(id uint, path string) (*entity.Member, error) {
