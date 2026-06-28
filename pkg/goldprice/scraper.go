@@ -2,6 +2,7 @@ package goldprice
 
 import (
 	"fmt"
+	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -89,6 +90,12 @@ func Fetch() (*ScrapedData, error) {
 			}
 		}
 	})
+
+	// Round buy/sell prices to whole baht (no fractional satang).
+	data.BarBuy = math.Round(data.BarBuy)
+	data.BarSell = math.Round(data.BarSell)
+	data.OrnamentBuy = math.Round(data.OrnamentBuy)
+	data.OrnamentSell = math.Round(data.OrnamentSell)
 
 	if data.BarBuy == 0 && data.BarSell == 0 {
 		return nil, fmt.Errorf("ไม่พบข้อมูลราคาทอง")

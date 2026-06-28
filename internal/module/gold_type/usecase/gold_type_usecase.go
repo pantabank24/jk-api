@@ -17,6 +17,7 @@ type GoldTypeUsecase interface {
 
 type GoldTypeRequest struct {
 	Name           string   `json:"name"`
+	Metal          string   `json:"metal"` // gold|silver|platinum|palladium
 	Description    string   `json:"description"`
 	PriceSource    string   `json:"price_source"`
 	DefaultPercent float64  `json:"default_percent"`
@@ -56,8 +57,13 @@ func (u *goldTypeUsecase) Create(req *GoldTypeRequest) (*entity.GoldType, error)
 	if steps == "" {
 		steps = "[]"
 	}
+	metal := req.Metal
+	if metal == "" {
+		metal = "gold"
+	}
 	gt := &entity.GoldType{
 		Name:           req.Name,
+		Metal:          metal,
 		Description:    req.Description,
 		PriceSource:    req.PriceSource,
 		DefaultPercent: req.DefaultPercent,
@@ -81,6 +87,9 @@ func (u *goldTypeUsecase) Update(id uint, req *GoldTypeRequest) (*entity.GoldTyp
 	}
 	if req.Name != "" {
 		gt.Name = req.Name
+	}
+	if req.Metal != "" {
+		gt.Metal = req.Metal
 	}
 	gt.Description = req.Description
 	if req.PriceSource != "" {

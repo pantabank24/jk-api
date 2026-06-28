@@ -24,4 +24,9 @@ type Member struct {
 	CreatedAt time.Time      `json:"created_at"`
 	UpdatedAt time.Time      `json:"updated_at"`
 	DeletedAt gorm.DeletedAt `json:"-" gorm:"index"`
+
+	// UsesCredits is a computed flag (not persisted) indicating whether this
+	// member is subject to the credit system: true for walk-in customers (no
+	// user account) or members whose user role holds the credits.use permission.
+	UsesCredits bool `json:"uses_credits" gorm:"-"`
 }

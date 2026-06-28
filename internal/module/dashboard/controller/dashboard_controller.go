@@ -44,8 +44,8 @@ func (ctrl *DashboardController) GetStats(c *fiber.Ctx) error {
 
 	today := time.Now().Truncate(24 * time.Hour)
 
-	// Build scoped quotation queries
-	quotationQuery := ctrl.db.Table("quotations").Where("deleted_at IS NULL")
+	// Build scoped quotation queries (exclude customer bills — counted separately)
+	quotationQuery := ctrl.db.Table("quotations").Where("deleted_at IS NULL").Where("is_bill = ?", false)
 	memberQuery := ctrl.db.Table("members").Where("deleted_at IS NULL")
 
 	switch roleName {
@@ -56,7 +56,7 @@ func (ctrl *DashboardController) GetStats(c *fiber.Ctx) error {
 			quotationQuery = quotationQuery.Where("store_id = ?", *storeID)
 			memberQuery = memberQuery.Where("store_id = ?", *storeID)
 		}
-	default: // branch, employee
+	default: // employee
 		if storeID != nil {
 			quotationQuery = quotationQuery.Where("store_id = ?", *storeID)
 			memberQuery = memberQuery.Where("store_id = ?", *storeID)

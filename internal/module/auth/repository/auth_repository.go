@@ -10,6 +10,7 @@ type AuthRepository interface {
 	FindByEmail(email string) (*entity.User, error)
 	FindByIDWithRole(id uint) (*entity.User, error)
 	GetPermissionsByRoleID(roleID uint) ([]string, error)
+	GetMemberCreditsByUserID(userID uint) (float64, bool)
 }
 
 type authRepository struct {
@@ -38,6 +39,17 @@ func (r *authRepository) FindByIDWithRole(id uint) (*entity.User, error) {
 		return nil, err
 	}
 	return &user, nil
+}
+
+// GetMemberCreditsByUserID returns the credit balance of the member profile
+// linked to the user, and whether such a profile exists.
+func (r *authRepository) GetMemberCreditsByUserID(userID uint) (float64, bool) {
+	var member entity.Member
+	err := r.db.Select("credits").Where("user_id = ?", userID).First(&member).Error
+	if err != nil {
+		return 0, false
+	}
+	return member.Credits, true
 }
 
 func (r *authRepository) GetPermissionsByRoleID(roleID uint) ([]string, error) {

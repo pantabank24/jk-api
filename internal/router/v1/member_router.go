@@ -21,7 +21,7 @@ func SetupMemberRoutes(v1 fiber.Router, db *gorm.DB, cfg *config.Config) {
 	rRepo := roleRepo.NewRoleRepository(db)
 	nRepo := notifRepo.NewNotificationRepository(db)
 
-	uc := memberUC.NewMemberUsecase(mRepo, nRepo)
+	uc := memberUC.NewMemberUsecase(mRepo, nRepo, rRepo)
 	uuc := userUC.NewUserUsecase(uRepo, rRepo)
 	ctrl := memberCtrl.NewMemberController(uc, uuc)
 

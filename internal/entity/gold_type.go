@@ -27,6 +27,7 @@ func ParseFormulaSteps(raw string) ([]FormulaStep, error) {
 type GoldType struct {
 	ID             uint      `json:"id"              gorm:"primaryKey"`
 	Name           string    `json:"name"            gorm:"type:varchar(100);not null"`
+	Metal          string    `json:"metal"           gorm:"type:varchar(20);default:'gold'"` // gold|silver|platinum|palladium
 	Description    string    `json:"description"     gorm:"type:text;default:''"`
 	PriceSource    string    `json:"price_source"    gorm:"type:varchar(30);default:'bar_buy'"`
 	DefaultPercent float64   `json:"default_percent" gorm:"type:decimal(10,4);default:0"`
@@ -38,6 +39,40 @@ type GoldType struct {
 	IsActive       bool      `json:"is_active"       gorm:"default:true"`
 	CreatedAt      time.Time `json:"created_at"`
 	UpdatedAt      time.Time `json:"updated_at"`
+}
+
+// ComputeItem mirrors the client-side calculation (lib/gold-calc.computeItem):
+// it converts plus to baht per PlusType, evaluates the per-gram price, and
+// returns the line total — which is the per-gram value itself when the formula
+// already consumes weight, otherwise perGram * weight.
+func (gt *GoldType) ComputeItem(price, percent, plus, weight float64) (perGram, total float64) {
+	steps, _ := ParseFormulaSteps(gt.FormulaSteps)
+	hasFormula := len(steps) > 0
+
+	plusBaht := plus
+	if gt.PlusType == 1 { // 1 = %
+		plusBaht = price * (plus / 100)
+	}
+
+	if hasFormula {
+		perGram = gt.ApplyFormula(FormulaVars{Price: price, Percent: percent, Plus: plusBaht, Weight: weight})
+	} else {
+		perGram = price*(percent/100) + plusBaht
+	}
+
+	usesWeight := false
+	for _, s := range steps {
+		if s.OperandType == "weight" {
+			usesWeight = true
+			break
+		}
+	}
+	if usesWeight {
+		total = perGram // formula already consumed weight
+	} else {
+		total = perGram * weight
+	}
+	return
 }
 
 // FormulaStep is a single operation in a gold type's price formula.

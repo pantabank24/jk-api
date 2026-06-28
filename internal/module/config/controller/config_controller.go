@@ -6,15 +6,23 @@ import (
 	"jk-api/pkg/response"
 
 	"github.com/gofiber/fiber/v2"
+	"gorm.io/gorm"
 )
 
 type ConfigController struct {
 	repo        repository.ConfigRepository
 	cronService *service.GoldPriceCron
+	db          *gorm.DB
 }
 
-func NewConfigController(repo repository.ConfigRepository, cronService *service.GoldPriceCron) *ConfigController {
-	return &ConfigController{repo: repo, cronService: cronService}
+func NewConfigController(repo repository.ConfigRepository, cronService *service.GoldPriceCron, db *gorm.DB) *ConfigController {
+	return &ConfigController{repo: repo, cronService: cronService, db: db}
+}
+
+// GetSalesStatus reports whether sales are open right now. Available to any
+// authenticated user (not gated by config.read) so staff/customers can see it.
+func (ctrl *ConfigController) GetSalesStatus(c *fiber.Ctx) error {
+	return response.Success(c, "ok", service.GetSalesStatus(ctrl.db))
 }
 
 func (ctrl *ConfigController) GetAll(c *fiber.Ctx) error {

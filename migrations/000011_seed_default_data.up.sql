@@ -2,7 +2,6 @@
 INSERT INTO roles (name, display_name, description, is_system) VALUES
     ('master', 'Master', 'ผู้ดูแลระบบสูงสุด มีสิทธิ์เข้าถึงทุกร้านและทุกฟังก์ชัน', TRUE),
     ('owner', 'เจ้าของร้าน', 'เจ้าของร้าน สามารถจัดการได้ทั้งร้านและสาขาในสังกัด', TRUE),
-    ('branch', 'ผู้จัดการสาขา', 'ผู้จัดการสาขา สามารถจัดการได้เฉพาะสาขาของตน', TRUE),
     ('employee', 'พนักงาน', 'พนักงาน สามารถออกใบเสนอราคาและดูสมาชิกได้', TRUE)
 ON CONFLICT (name) DO NOTHING;
 
@@ -50,24 +49,10 @@ INSERT INTO role_permissions (role_id, permission_id)
 SELECT r.id, p.id FROM roles r CROSS JOIN permissions p
 WHERE r.name = 'owner' AND p.code IN (
     'stores.read',
-    'branches.create', 'branches.read', 'branches.update', 'branches.delete',
-    'quotations.create', 'quotations.read', 'quotations.update', 'quotations.delete',
-    'members.create', 'members.read', 'members.update', 'members.delete',
-    'users.create', 'users.read', 'users.update', 'users.delete',
-    'roles.read'
-)
-ON CONFLICT (role_id, permission_id) DO NOTHING;
-
--- Assign branch permissions
-INSERT INTO role_permissions (role_id, permission_id)
-SELECT r.id, p.id FROM roles r CROSS JOIN permissions p
-WHERE r.name = 'branch' AND p.code IN (
-    'stores.read',
     'branches.read',
     'quotations.create', 'quotations.read', 'quotations.update', 'quotations.delete',
     'members.create', 'members.read', 'members.update', 'members.delete',
-    'users.read',
-    'roles.read'
+    'users.create', 'users.read', 'users.update', 'users.delete'
 )
 ON CONFLICT (role_id, permission_id) DO NOTHING;
 
@@ -75,10 +60,8 @@ ON CONFLICT (role_id, permission_id) DO NOTHING;
 INSERT INTO role_permissions (role_id, permission_id)
 SELECT r.id, p.id FROM roles r CROSS JOIN permissions p
 WHERE r.name = 'employee' AND p.code IN (
-    'stores.read',
     'branches.read',
-    'quotations.create', 'quotations.read',
-    'members.read'
+    'quotations.create', 'quotations.read'
 )
 ON CONFLICT (role_id, permission_id) DO NOTHING;
 

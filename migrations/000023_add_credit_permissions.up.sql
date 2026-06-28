@@ -10,20 +10,6 @@ SELECT r.id, p.id FROM roles r CROSS JOIN permissions p
 WHERE r.name = 'master' AND p.code IN ('credits.read', 'credits.update')
 ON CONFLICT (role_id, permission_id) DO NOTHING;
 
--- owner
-INSERT INTO role_permissions (role_id, permission_id)
-SELECT r.id, p.id FROM roles r CROSS JOIN permissions p
-WHERE r.name = 'owner' AND p.code IN ('credits.read', 'credits.update')
-ON CONFLICT (role_id, permission_id) DO NOTHING;
+-- owner: no credit-management menu (owners don't manage credits)
 
--- branch
-INSERT INTO role_permissions (role_id, permission_id)
-SELECT r.id, p.id FROM roles r CROSS JOIN permissions p
-WHERE r.name = 'branch' AND p.code IN ('credits.read', 'credits.update')
-ON CONFLICT (role_id, permission_id) DO NOTHING;
-
--- employee: read only
-INSERT INTO role_permissions (role_id, permission_id)
-SELECT r.id, p.id FROM roles r CROSS JOIN permissions p
-WHERE r.name = 'employee' AND p.code IN ('credits.read')
-ON CONFLICT (role_id, permission_id) DO NOTHING;
+-- employee: no credit-management menu

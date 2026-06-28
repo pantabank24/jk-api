@@ -54,7 +54,7 @@ func NewUserUsecase(userRepo repository.UserRepository, roleRepo roleRepo.RoleRe
 	return &userUsecase{userRepo: userRepo, roleRepo: roleRepo}
 }
 
-// requiresBranch returns true if the role name is employee or branch level
+// requiresBranch returns true if the role name is employee level
 func (u *userUsecase) requiresBranch(roleID *uint) (bool, error) {
 	if roleID == nil {
 		return false, nil
@@ -63,7 +63,7 @@ func (u *userUsecase) requiresBranch(roleID *uint) (bool, error) {
 	if err != nil {
 		return false, nil
 	}
-	return role.Name == "employee" || role.Name == "branch", nil
+	return role.Name == "employee", nil
 }
 
 func (u *userUsecase) CreateUser(req *CreateUserRequest) (*entity.User, error) {

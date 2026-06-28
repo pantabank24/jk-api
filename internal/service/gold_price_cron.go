@@ -6,25 +6,29 @@ import (
 	"time"
 
 	"jk-api/internal/entity"
-	goldPriceRepo "jk-api/internal/module/gold_price/repository"
 	configRepo "jk-api/internal/module/config/repository"
+	goldPriceRepo "jk-api/internal/module/gold_price/repository"
+	metalPriceRepo "jk-api/internal/module/metal_price/repository"
 	"jk-api/pkg/goldprice"
+	"jk-api/pkg/silverprice"
 
 	"github.com/robfig/cron/v3"
 )
 
-// GoldPriceCron manages the gold price scraping cron job.
+// GoldPriceCron manages the metal price scraping cron job (gold + silver).
 // It reads config from DB and can be reloaded at runtime.
 type GoldPriceCron struct {
 	mu         sync.Mutex
 	cron       *cron.Cron
 	priceRepo  goldPriceRepo.GoldPriceRepository
+	metalRepo  metalPriceRepo.MetalPriceRepository
 	configRepo configRepo.ConfigRepository
 }
 
-func NewGoldPriceCron(priceRepo goldPriceRepo.GoldPriceRepository, cfgRepo configRepo.ConfigRepository) *GoldPriceCron {
+func NewGoldPriceCron(priceRepo goldPriceRepo.GoldPriceRepository, metalRepo metalPriceRepo.MetalPriceRepository, cfgRepo configRepo.ConfigRepository) *GoldPriceCron {
 	return &GoldPriceCron{
 		priceRepo:  priceRepo,
+		metalRepo:  metalRepo,
 		configRepo: cfgRepo,
 	}
 }
@@ -73,6 +77,7 @@ func (g *GoldPriceCron) start() {
 	g.cron = cron.New()
 	_, err := g.cron.AddFunc(cronExpr, func() {
 		g.fetchAndSave()
+		g.fetchSilver()
 	})
 	if err != nil {
 		log.Printf("❌ Invalid cron expression '%s': %v", cronExpr, err)
@@ -105,4 +110,33 @@ func (g *GoldPriceCron) fetchAndSave() {
 		return
 	}
 	log.Printf("✅ Gold price saved: bar_buy=%.2f bar_sell=%.2f", gp.BarBuy, gp.BarSell)
+}
+
+// fetchSilver pulls the latest silver bar price and stores it under symbol XAG.
+func (g *GoldPriceCron) fetchSilver() {
+	if g.metalRepo == nil {
+		return
+	}
+	data, err := silverprice.Fetch()
+	if err != nil {
+		log.Printf("⚠️  Silver price fetch failed: %v", err)
+		return
+	}
+	mp := &entity.MetalPrice{
+		Symbol:    "XAG",
+		Buy:       data.Buy,
+		Sell:      data.Sell,
+		Spot:      data.Spot,
+		Exchange:  data.Exchange,
+		Previous:  data.Previous,
+		Round:     data.Round,
+		PriceDate: data.Date,
+		Source:    "auto",
+		CreatedAt: time.Now(),
+	}
+	if err := g.metalRepo.Create(mp); err != nil {
+		log.Printf("⚠️  Silver price save failed: %v", err)
+		return
+	}
+	log.Printf("✅ Silver price saved: buy=%.2f sell=%.2f", mp.Buy, mp.Sell)
 }

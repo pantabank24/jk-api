@@ -7,7 +7,14 @@ import (
 	"jk-api/internal/entity"
 	"jk-api/internal/module/member/repository"
 	notificationRepo "jk-api/internal/module/notification/repository"
+	roleRepo "jk-api/internal/module/role/repository"
 )
+
+// creditsUsePermission is the permission code whose holders have their
+// quotations charged against member credits. It is the single source of truth
+// for "this member is part of the credit system" — granting/revoking it via a
+// migration is enough; no role names are hardcoded.
+const creditsUsePermission = "credits.use"
 
 type MemberUsecase interface {
 	CreateMember(req *CreateMemberRequest) (*entity.Member, error)
@@ -50,10 +57,48 @@ type CreditRequest struct {
 type memberUsecase struct {
 	memberRepo repository.MemberRepository
 	notifRepo  notificationRepo.NotificationRepository
+	roleRepo   roleRepo.RoleRepository
 }
 
-func NewMemberUsecase(memberRepo repository.MemberRepository, notifRepo notificationRepo.NotificationRepository) MemberUsecase {
-	return &memberUsecase{memberRepo: memberRepo, notifRepo: notifRepo}
+func NewMemberUsecase(memberRepo repository.MemberRepository, notifRepo notificationRepo.NotificationRepository, roleRepo roleRepo.RoleRepository) MemberUsecase {
+	return &memberUsecase{memberRepo: memberRepo, notifRepo: notifRepo, roleRepo: roleRepo}
+}
+
+// roleUsesCredits reports whether a role holds the credits.use permission.
+// Results are memoized in cache so annotating a list of members costs at most
+// one lookup per distinct role.
+func (u *memberUsecase) roleUsesCredits(roleID uint, cache map[uint]bool) bool {
+	if v, ok := cache[roleID]; ok {
+		return v
+	}
+	perms, _ := u.roleRepo.GetPermissionsByRoleID(roleID)
+	used := false
+	for _, p := range perms {
+		if p.Code == creditsUsePermission {
+			used = true
+			break
+		}
+	}
+	cache[roleID] = used
+	return used
+}
+
+// memberUsesCredits reports whether a member is subject to credit management:
+// walk-in customers (no user account / no role) always are, otherwise it
+// depends on whether their user's role holds credits.use.
+func (u *memberUsecase) memberUsesCredits(m *entity.Member, cache map[uint]bool) bool {
+	if m.User == nil || m.User.RoleID == nil {
+		return true
+	}
+	return u.roleUsesCredits(*m.User.RoleID, cache)
+}
+
+// annotateUsesCredits fills the computed UsesCredits flag on each member.
+func (u *memberUsecase) annotateUsesCredits(members []entity.Member) {
+	cache := map[uint]bool{}
+	for i := range members {
+		members[i].UsesCredits = u.memberUsesCredits(&members[i], cache)
+	}
 }
 
 func (u *memberUsecase) CreateMember(req *CreateMemberRequest) (*entity.Member, error) {
@@ -102,7 +147,12 @@ func (u *memberUsecase) GetAllMembers(storeID *uint, branchID *uint, page, limit
 	if limit < 1 || limit > 100 {
 		limit = 10
 	}
-	return u.memberRepo.FindAll(storeID, branchID, page, limit, search, status)
+	members, total, err := u.memberRepo.FindAll(storeID, branchID, page, limit, search, status)
+	if err != nil {
+		return nil, 0, err
+	}
+	u.annotateUsesCredits(members)
+	return members, total, nil
 }
 
 func (u *memberUsecase) UpdateImage(id uint, path string) (*entity.Member, error) {
@@ -110,7 +160,12 @@ func (u *memberUsecase) UpdateImage(id uint, path string) (*entity.Member, error
 }
 
 func (u *memberUsecase) GetMemberByID(id uint) (*entity.Member, error) {
-	return u.memberRepo.FindByID(id)
+	member, err := u.memberRepo.FindByID(id)
+	if err != nil {
+		return nil, err
+	}
+	member.UsesCredits = u.memberUsesCredits(member, map[uint]bool{})
+	return member, nil
 }
 
 func (u *memberUsecase) UpdateMember(id uint, req *UpdateMemberRequest) (*entity.Member, error) {
@@ -152,9 +207,10 @@ func (u *memberUsecase) AddCredit(id uint, req *CreditRequest) (*entity.Member, 
 		return nil, errors.New("member not found")
 	}
 
-	// Only allow credit management for members without a user account (regular customers)
-	// or members linked to an employee user. Owner/branch/master bypass credits on quotations.
-	if member.User != nil && member.User.Role != nil && member.User.Role.Name != "employee" {
+	// Only allow credit management for members that are part of the credit system:
+	// walk-in customers, or members whose user role holds credits.use. Roles
+	// without it (e.g. master) bypass credits on quotations entirely.
+	if !u.memberUsesCredits(member, map[uint]bool{}) {
 		return nil, errors.New("ไม่สามารถจัดการเครดิตของสมาชิกที่ไม่ได้ใช้ระบบเครดิต")
 	}
 

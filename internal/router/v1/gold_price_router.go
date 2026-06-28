@@ -19,7 +19,9 @@ func SetupGoldPriceRoutes(v1 fiber.Router, db *gorm.DB, cfg *config.Config) {
 		// All authenticated users can read current price
 		gp.Get("/latest", ctrl.GetLatest)
 		gp.Get("/history", middleware.RequirePermission(db, "gold_prices.read"), ctrl.GetHistory)
-		// Manual fetch — master only
+		// Manual fetch from the auto feed
 		gp.Post("/fetch", middleware.RequirePermission(db, "gold_prices.create"), ctrl.FetchAndSave)
+		// Manually enter a price valid for a time window (overrides auto)
+		gp.Post("/manual", middleware.RequirePermission(db, "gold_prices.create"), ctrl.SetManual)
 	}
 }

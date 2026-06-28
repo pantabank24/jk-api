@@ -12,6 +12,9 @@ type Store struct {
 	Name      string         `json:"name" gorm:"type:varchar(255);not null"`
 	Address   string         `json:"address" gorm:"type:text;default:''"`
 	Phone     string         `json:"phone" gorm:"type:varchar(20);default:''"`
+	TaxID     string         `json:"tax_id" gorm:"type:varchar(50);default:''"`
+	TaxName   string         `json:"tax_name" gorm:"type:varchar(255);default:''"`
+	Website   string         `json:"website" gorm:"type:varchar(255);default:''"`
 	Logo      string         `json:"logo" gorm:"type:varchar(500);default:''"`
 	IsActive  bool           `json:"is_active" gorm:"default:true"`
 	Branches  []Branch       `json:"branches,omitempty" gorm:"foreignKey:StoreID"`

@@ -20,6 +20,7 @@ type MemberRepository interface {
 	CreateCreditTransaction(tx *entity.CreditTransaction) error
 	GetCreditTransactions(memberID uint, page, limit int) ([]entity.CreditTransaction, int64, error)
 	GetAllCreditTransactions(storeID, branchID, memberID *uint, source string, page, limit int, search string) ([]entity.CreditTransaction, int64, error)
+	UserUsesCredits(userID uint) bool
 }
 
 type memberRepository struct {
@@ -101,6 +102,18 @@ func (r *memberRepository) UpdateImage(id uint, path string) (*entity.Member, er
 
 func (r *memberRepository) CreateCreditTransaction(tx *entity.CreditTransaction) error {
 	return r.db.Create(tx).Error
+}
+
+// UserUsesCredits reports whether the user's role holds the credits.use
+// permission — i.e. whether that user's quotations deduct credits.
+func (r *memberRepository) UserUsesCredits(userID uint) bool {
+	var count int64
+	r.db.Table("users").
+		Joins("JOIN role_permissions ON role_permissions.role_id = users.role_id").
+		Joins("JOIN permissions ON permissions.id = role_permissions.permission_id").
+		Where("users.id = ? AND permissions.code = ?", userID, "credits.use").
+		Count(&count)
+	return count > 0
 }
 
 func (r *memberRepository) GetCreditTransactions(memberID uint, page, limit int) ([]entity.CreditTransaction, int64, error) {

@@ -64,6 +64,14 @@ migrate-force: ## Force migration version (use: make migrate-force version=N)
 migrate-create: ## Create new migration (use: make migrate-create name=xxx)
 	migrate create -ext sql -dir migrations -seq $(name)
 
+# ==================== Data Repair ====================
+
+backfill: ## Preview the quotation_items repair (dry run, no writes)
+	go run cmd/backfill/main.go
+
+backfill-apply: ## Apply the quotation_items repair (writes changes; run once)
+	go run cmd/backfill/main.go -apply
+
 # ==================== Docker ====================
 
 docker-build: ## Build Docker image

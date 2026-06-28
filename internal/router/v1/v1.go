@@ -6,6 +6,7 @@ import (
 	configRepo "jk-api/internal/module/config/repository"
 	goldPriceRepo "jk-api/internal/module/gold_price/repository"
 	logRepo "jk-api/internal/module/log/repository"
+	metalPriceRepo "jk-api/internal/module/metal_price/repository"
 	"jk-api/internal/service"
 
 	"github.com/gofiber/fiber/v2"
@@ -30,6 +31,8 @@ func SetupV1Routes(api fiber.Router, db *gorm.DB, cfg *config.Config, cronSvc *s
 	SetupBranchRoutes(v1, db, cfg)
 	SetupMemberRoutes(v1, db, cfg)
 	SetupQuotationRoutes(v1, db, cfg)
+	SetupBillRoutes(v1, db, cfg)
+	SetupCustomerRoutes(v1, db, cfg)
 	SetupRoleRoutes(v1, db, cfg)
 	SetupLogRoutes(v1, db, cfg, lRepo)
 	SetupDashboardRoutes(v1, db, cfg)
@@ -37,6 +40,7 @@ func SetupV1Routes(api fiber.Router, db *gorm.DB, cfg *config.Config, cronSvc *s
 	// New modules
 	SetupGoldTypeRoutes(v1, db, cfg)
 	SetupGoldPriceRoutes(v1, db, cfg)
+	SetupMetalPriceRoutes(v1, db, cfg)
 	SetupConfigRoutes(v1, db, cfg, cronSvc)
 	SetupNotificationRoutes(v1, db, cfg)
 }
@@ -44,6 +48,7 @@ func SetupV1Routes(api fiber.Router, db *gorm.DB, cfg *config.Config, cronSvc *s
 // NewCronService creates and starts the gold price cron service.
 func NewCronService(db *gorm.DB) *service.GoldPriceCron {
 	priceRepo := goldPriceRepo.NewGoldPriceRepository(db)
+	metalRepo := metalPriceRepo.NewMetalPriceRepository(db)
 	cfgRepo := configRepo.NewConfigRepository(db)
-	return service.NewGoldPriceCron(priceRepo, cfgRepo)
+	return service.NewGoldPriceCron(priceRepo, metalRepo, cfgRepo)
 }

@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"math"
 	"strconv"
 	"time"
 
@@ -63,4 +64,47 @@ func (ctrl *GoldPriceController) FetchAndSave(c *fiber.Ctx) error {
 		return response.InternalServerError(c, err.Error())
 	}
 	return response.Created(c, "Gold price fetched and saved", gp)
+}
+
+type ManualGoldRequest struct {
+	BarBuy       float64    `json:"bar_buy"`
+	BarSell      float64    `json:"bar_sell"`
+	OrnamentBuy  float64    `json:"ornament_buy"`
+	OrnamentSell float64    `json:"ornament_sell"`
+	ValidFrom    *time.Time `json:"valid_from"`
+	ValidUntil   *time.Time `json:"valid_until"`
+}
+
+// SetManual stores a manually-entered gold price valid for a time window. While
+// the window is active it overrides the auto-fetched price; afterwards the
+// system falls back to auto.
+func (ctrl *GoldPriceController) SetManual(c *fiber.Ctx) error {
+	var req ManualGoldRequest
+	if err := c.BodyParser(&req); err != nil {
+		return response.BadRequest(c, "ข้อมูลไม่ถูกต้อง")
+	}
+	if req.ValidFrom == nil || req.ValidUntil == nil {
+		return response.BadRequest(c, "กรุณาระบุช่วงเวลาที่ใช้ราคานี้ (ตั้งแต่–ถึง)")
+	}
+	if req.ValidUntil.Before(*req.ValidFrom) {
+		return response.BadRequest(c, "เวลาสิ้นสุดต้องอยู่หลังเวลาเริ่ม")
+	}
+	now := time.Now()
+	gp := &entity.GoldPrice{
+		BarBuy:       math.Round(req.BarBuy),
+		BarSell:      math.Round(req.BarSell),
+		OrnamentBuy:  math.Round(req.OrnamentBuy),
+		OrnamentSell: math.Round(req.OrnamentSell),
+		GoldDate:     now.Format("2006-01-02"),
+		GoldTime:     now.Format("15:04"),
+		GoldRound:    "manual",
+		Source:       "manual",
+		ValidFrom:    req.ValidFrom,
+		ValidUntil:   req.ValidUntil,
+		CreatedAt:    now,
+	}
+	if err := ctrl.repo.Create(gp); err != nil {
+		return response.InternalServerError(c, err.Error())
+	}
+	return response.Created(c, "บันทึกราคาทองแล้ว", gp)
 }

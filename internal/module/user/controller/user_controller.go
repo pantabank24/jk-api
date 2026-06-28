@@ -86,7 +86,7 @@ func (ctrl *UserController) GetAllUsers(c *fiber.Ctx) error {
 			}
 		}
 	default:
-		// branch / employee — locked to store + branch
+		// employee — locked to store + branch
 		f.StoreID = middleware.GetStoreID(c)
 		f.BranchID = middleware.GetBranchID(c)
 	}

@@ -20,13 +20,19 @@ type CreateStoreRequest struct {
 	Name    string `json:"name" validate:"required"`
 	Address string `json:"address"`
 	Phone   string `json:"phone"`
+	TaxID   string `json:"tax_id"`
+	TaxName string `json:"tax_name"`
+	Website string `json:"website"`
 }
 
 type UpdateStoreRequest struct {
-	Name     string `json:"name"`
-	Address  string `json:"address"`
-	Phone    string `json:"phone"`
-	IsActive *bool  `json:"is_active"`
+	Name     string  `json:"name"`
+	Address  string  `json:"address"`
+	Phone    string  `json:"phone"`
+	TaxID    *string `json:"tax_id"`
+	TaxName  *string `json:"tax_name"`
+	Website  *string `json:"website"`
+	IsActive *bool   `json:"is_active"`
 }
 
 type storeUsecase struct {
@@ -48,6 +54,9 @@ func (u *storeUsecase) CreateStore(req *CreateStoreRequest) (*entity.Store, erro
 		Name:     req.Name,
 		Address:  req.Address,
 		Phone:    req.Phone,
+		TaxID:    req.TaxID,
+		TaxName:  req.TaxName,
+		Website:  req.Website,
 		IsActive: true,
 	}
 
@@ -85,6 +94,15 @@ func (u *storeUsecase) UpdateStore(id uint, req *UpdateStoreRequest) (*entity.St
 	}
 	if req.Phone != "" {
 		store.Phone = req.Phone
+	}
+	if req.TaxID != nil {
+		store.TaxID = *req.TaxID
+	}
+	if req.TaxName != nil {
+		store.TaxName = *req.TaxName
+	}
+	if req.Website != nil {
+		store.Website = *req.Website
 	}
 	if req.IsActive != nil {
 		store.IsActive = *req.IsActive

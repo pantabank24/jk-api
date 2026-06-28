@@ -23,11 +23,13 @@ type LoginResponse struct {
 	Token       string      `json:"token"`
 	User        interface{} `json:"user"`
 	Permissions []string    `json:"permissions"`
+	Credits     float64     `json:"credits"`
 }
 
 type MeResponse struct {
 	User        interface{} `json:"user"`
 	Permissions []string    `json:"permissions"`
+	Credits     float64     `json:"credits"`
 }
 
 type TokenResponse struct {
@@ -90,10 +92,13 @@ func (u *authUsecase) Login(req *LoginRequest) (*LoginResponse, error) {
 		permissions, _ = u.authRepo.GetPermissionsByRoleID(roleID)
 	}
 
+	credits, _ := u.authRepo.GetMemberCreditsByUserID(user.ID)
+
 	return &LoginResponse{
 		Token:       token,
 		User:        user,
 		Permissions: permissions,
+		Credits:     credits,
 	}, nil
 }
 
@@ -108,9 +113,12 @@ func (u *authUsecase) GetMe(userID uint) (*MeResponse, error) {
 		permissions, _ = u.authRepo.GetPermissionsByRoleID(*user.RoleID)
 	}
 
+	credits, _ := u.authRepo.GetMemberCreditsByUserID(user.ID)
+
 	return &MeResponse{
 		User:        user,
 		Permissions: permissions,
+		Credits:     credits,
 	}, nil
 }
 

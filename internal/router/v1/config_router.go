@@ -13,10 +13,12 @@ import (
 
 func SetupConfigRoutes(v1 fiber.Router, db *gorm.DB, cfg *config.Config, cronSvc *service.GoldPriceCron) {
 	repo := configRepo.NewConfigRepository(db)
-	ctrl := configCtrl.NewConfigController(repo, cronSvc)
+	ctrl := configCtrl.NewConfigController(repo, cronSvc, db)
 
 	cfgGroup := v1.Group("/configs", middleware.AuthMiddleware(cfg))
 	{
+		// Auth-only (no config.read): any user can check whether sales are open.
+		cfgGroup.Get("/sales-status", ctrl.GetSalesStatus)
 		cfgGroup.Get("/", middleware.RequirePermission(db, "config.read"), ctrl.GetAll)
 		cfgGroup.Put("/", middleware.RequirePermission(db, "config.update"), ctrl.Update)
 	}

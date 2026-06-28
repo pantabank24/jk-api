@@ -14,21 +14,38 @@ type QuotationUsecase interface {
 	CreateQuotation(req *CreateQuotationRequest) (*entity.Quotation, error)
 	GetAllQuotations(storeID *uint, branchID *uint, createdBy *uint, status *int, page, limit int, search string) ([]entity.Quotation, int64, error)
 	GetQuotationByID(id uint) (*entity.Quotation, error)
-	UpdateQuotationStatus(id uint, req *UpdateStatusRequest) (*entity.Quotation, error)
-	UpdateQuotation(id uint, req *UpdateQuotationRequest) (*entity.Quotation, error)
+	UpdateQuotationStatus(id uint, req *UpdateStatusRequest, allowApproved bool) (*entity.Quotation, error)
+	UpdateQuotation(id uint, req *UpdateQuotationRequest, allowApproved bool) (*entity.Quotation, error)
 	DeleteQuotation(id uint) error
-	AddImages(id uint, urls []string) error
+	AddImages(id uint, urls []string, imageType string) error
 }
 
 type CreateQuotationRequest struct {
 	// Store/Branch are set from JWT context in controller — NOT from payload
 	StoreID  *uint  `json:"-"`
 	BranchID *uint  `json:"-"`
-	// CreatedByUserID and AutoApprove are set from JWT in controller
+	// CreatedByUserID and UsesCredits are set from JWT in controller.
+	// UsesCredits is true when the creator's role holds credits.use — its
+	// quotations deduct credits from the creator's member profile on creation.
 	CreatedByUserID uint   `json:"-"`
-	AutoApprove     bool   `json:"-"`
+	UsesCredits     bool   `json:"-"`
+	// GoldRound/GoldPriceID record the gold-price round in effect at creation
+	// (set from the latest gold price in the controller) for reporting.
+	GoldRound       string `json:"-"`
+	GoldPriceID     *uint  `json:"-"`
+	// PayloadStoreID lets a master assign the quotation to a chosen store (master
+	// has no store_id of their own). Ignored for owner/employee (set from JWT).
+	PayloadStoreID  *uint  `json:"store_id"`
 	MemberID        *uint  `json:"member_id"`
 	Note            string `json:"note"`
+	SignerName      string `json:"signer_name"`
+	SignerPhone     string `json:"signer_phone"`
+	PDPAConsent     bool   `json:"pdpa_consent"`
+	// BillID / BillIDs link this quotation to the customer's bill(s) it is issued
+	// for — those bills then advance to "รอตรวจบิล". BillIDs lets a master combine
+	// all of a customer's pending bills into one quotation.
+	BillID          *uint  `json:"bill_id"`
+	BillIDs         []uint `json:"bill_ids"`
 	Items           []CreateQuotationItemRequest `json:"items"`
 }
 
@@ -47,12 +64,20 @@ type UpdateStatusRequest struct {
 	Status       int    `json:"status"`
 	Note         string `json:"note"`
 	RejectReason string `json:"reject_reason"`
+	// RefundCredits, when true, refunds the credits charged on creation back to
+	// the creator on cancellation (status=2). Only applies when the quotation was
+	// approved/charged and the creator's role uses credits.
+	RefundCredits bool `json:"refund_credits"`
 }
 
 type UpdateQuotationRequest struct {
 	MemberID *uint                       `json:"member_id"`
 	Note     string                      `json:"note"`
 	Items    []CreateQuotationItemRequest `json:"items"`
+	// AdjustCredits, when true, reconciles the creator's credit balance by the
+	// change in total (charging more / refunding) and logs a credit transaction.
+	// Only applies when a master edits and the creator's role uses credits.
+	AdjustCredits bool `json:"adjust_credits"`
 }
 
 type quotationUsecase struct {
@@ -73,6 +98,9 @@ func (u *quotationUsecase) CreateQuotation(req *CreateQuotationRequest) (*entity
 	if len(req.Items) == 0 {
 		return nil, errors.New("ต้องมีรายการอย่างน้อย 1 รายการ")
 	}
+	if !req.PDPAConsent {
+		return nil, errors.New("กรุณายอมรับเงื่อนไขการเก็บข้อมูลส่วนบุคคล (PDPA) ก่อนบันทึก")
+	}
 
 	// Calculate total
 	var totalAmount float64
@@ -80,15 +108,15 @@ func (u *quotationUsecase) CreateQuotation(req *CreateQuotationRequest) (*entity
 		totalAmount += item.Total
 	}
 
-	// Auto-link member from creator's profile + credit check
+	// Auto-link the creator's member profile (credits are deducted from it).
+	// Overdraw is allowed: no insufficient-credit block here — the balance may
+	// go negative. The client shows a warning before creating in that case.
+	var creditMember *entity.Member
 	if req.CreatedByUserID != 0 {
 		member, err := u.memberRepo.FindByUserID(req.CreatedByUserID)
 		if err == nil && member != nil {
 			req.MemberID = &member.ID // always link member from token
-			// owner/master (AutoApprove=true) are exempt from credit requirement
-			if !req.AutoApprove && member.Credits < totalAmount {
-				return nil, errors.New("เครดิตไม่เพียงพอ กรุณาเติมเครดิตก่อนออกใบเสนอราคา")
-			}
+			creditMember = member
 		}
 	}
 
@@ -112,20 +140,21 @@ func (u *quotationUsecase) CreateQuotation(req *CreateQuotationRequest) (*entity
 	}
 
 	createdBy := req.CreatedByUserID
-	status := 0 // pending
-	if req.AutoApprove {
-		status = 1 // approved
-	}
-
 	quotation := &entity.Quotation{
 		StoreID:     req.StoreID,
 		BranchID:    req.BranchID,
 		MemberID:    req.MemberID,
 		CreatedBy:   &createdBy,
 		Code:        code,
-		Status:      status,
+		Status:      1, // approved immediately on creation
 		Note:        req.Note,
 		TotalAmount: totalAmount,
+		GoldRound:   req.GoldRound,
+		GoldPriceID: req.GoldPriceID,
+		SignerName:  req.SignerName,
+		SignerPhone: req.SignerPhone,
+		PDPAConsent: req.PDPAConsent,
+		BillID:      req.BillID,
 		Items:       items,
 	}
 
@@ -133,13 +162,61 @@ func (u *quotationUsecase) CreateQuotation(req *CreateQuotationRequest) (*entity
 		return nil, err
 	}
 
-	// Auto-approved (non-employee roles bypass credit deduction): just notify
-	if req.AutoApprove && quotation.CreatedBy != nil {
+	// Deduct credits immediately for credit-using creators. Overdraw is allowed:
+	// the resulting balance may be negative.
+	deducted := false
+	if req.UsesCredits && creditMember != nil {
+		newBalance := creditMember.Credits - totalAmount
+		creditMember.Credits = newBalance
+		_ = u.memberRepo.Update(creditMember)
+		_ = u.memberRepo.CreateCreditTransaction(&entity.CreditTransaction{
+			MemberID:    creditMember.ID,
+			StoreID:     creditMember.StoreID,
+			BranchID:    creditMember.BranchID,
+			Action:      1, // withdraw
+			Amount:      totalAmount,
+			Balance:     newBalance,
+			Description: "หักเครดิตจากใบเสนอราคา " + quotation.Code,
+			CreatedBy:   &createdBy,
+		})
+		deducted = true
+	}
+
+	// Notify the creator that the quotation was approved.
+	if quotation.CreatedBy != nil {
+		body := fmt.Sprintf("ใบเสนอราคา %s ได้รับการอนุมัติแล้ว", quotation.Code)
+		if deducted {
+			body = fmt.Sprintf("ใบเสนอราคา %s อนุมัติแล้ว หักเครดิต %.2f บาท คงเหลือ %.2f บาท", quotation.Code, totalAmount, creditMember.Credits)
+		}
 		_ = u.notifRepo.Create(&entity.Notification{
 			UserID: *quotation.CreatedBy,
 			Type:   "quotation_approved",
 			Title:  "ใบเสนอราคาได้รับการอนุมัติ",
-			Body:   fmt.Sprintf("ใบเสนอราคา %s ได้รับการอนุมัติแล้ว", quotation.Code),
+			Body:   body,
+		})
+	}
+
+	// If issued for customer bill(s), advance each to "รอตรวจบิล", link it to this
+	// quotation, and notify the customer once so they can view the issued bill.
+	billIDs := req.BillIDs
+	if len(billIDs) == 0 && req.BillID != nil {
+		billIDs = []uint{*req.BillID}
+	}
+	var notifiedUser *uint
+	for _, bid := range billIDs {
+		_ = u.quotationRepo.MarkBillIssued(bid, quotation.ID)
+		if notifiedUser == nil {
+			if bill, err := u.quotationRepo.FindByID(bid); err == nil && bill != nil && bill.CreatedBy != nil {
+				notifiedUser = bill.CreatedBy
+			}
+		}
+	}
+	if notifiedUser != nil {
+		_ = u.notifRepo.Create(&entity.Notification{
+			UserID: *notifiedUser,
+			Type:   "bill_issued",
+			Title:  "บิลของคุณถูกออกแล้ว",
+			Body:   fmt.Sprintf("ออกบิลแล้ว %d รายการ สามารถดูรายละเอียดได้", len(billIDs)),
 		})
 	}
 
@@ -160,13 +237,18 @@ func (u *quotationUsecase) GetQuotationByID(id uint) (*entity.Quotation, error) 
 	return u.quotationRepo.FindByID(id)
 }
 
-func (u *quotationUsecase) UpdateQuotationStatus(id uint, req *UpdateStatusRequest) (*entity.Quotation, error) {
+func (u *quotationUsecase) UpdateQuotationStatus(id uint, req *UpdateStatusRequest, allowApproved bool) (*entity.Quotation, error) {
 	quotation, err := u.quotationRepo.FindByID(id)
 	if err != nil {
 		return nil, errors.New("quotation not found")
 	}
 
 	prevStatus := quotation.Status
+	// Changing an already-approved quotation (e.g. cancelling it) is master-only,
+	// mirroring the edit rule — see the controller.
+	if prevStatus == 1 && req.Status != 1 && !allowApproved {
+		return nil, errors.New("ไม่มีสิทธิ์เปลี่ยนสถานะใบเสนอราคาที่อนุมัติแล้ว")
+	}
 	quotation.Status = req.Status
 	if req.Note != "" {
 		quotation.Note = req.Note
@@ -179,14 +261,13 @@ func (u *quotationUsecase) UpdateQuotationStatus(id uint, req *UpdateStatusReque
 		return nil, err
 	}
 
-	// On approval (pending → approved): deduct credits from creator's member profile
+	// On approval (pending → approved): deduct credits from creator's member profile.
+	// New quotations are auto-approved on creation, so this only fires for any
+	// legacy pending quotations. Overdraw is allowed: the balance may go negative.
 	if prevStatus == 0 && req.Status == 1 && quotation.CreatedBy != nil {
 		member, err := u.memberRepo.FindByUserID(*quotation.CreatedBy)
 		if err == nil && member != nil {
 			newBalance := member.Credits - quotation.TotalAmount
-			if newBalance < 0 {
-				newBalance = 0
-			}
 			member.Credits = newBalance
 			_ = u.memberRepo.Update(member)
 
@@ -216,11 +297,35 @@ func (u *quotationUsecase) UpdateQuotationStatus(id uint, req *UpdateStatusReque
 		}
 	}
 
-	// On rejection: notify creator
+	// On cancellation (status=2): optionally refund the credits that were charged
+	// on creation, then notify. Refund only when the quotation was approved/charged
+	// (prevStatus==1) and the creator's role uses credits.
 	if req.Status == 2 && quotation.CreatedBy != nil {
+		refunded := false
+		if prevStatus == 1 && req.RefundCredits && u.memberRepo.UserUsesCredits(*quotation.CreatedBy) {
+			if member, err := u.memberRepo.FindByUserID(*quotation.CreatedBy); err == nil && member != nil {
+				member.Credits += quotation.TotalAmount
+				_ = u.memberRepo.Update(member)
+				_ = u.memberRepo.CreateCreditTransaction(&entity.CreditTransaction{
+					MemberID:    member.ID,
+					StoreID:     member.StoreID,
+					BranchID:    member.BranchID,
+					Action:      0, // deposit (refund)
+					Amount:      quotation.TotalAmount,
+					Balance:     member.Credits,
+					Description: "คืนเครดิตจากการยกเลิกใบเสนอราคา " + quotation.Code,
+					CreatedBy:   quotation.CreatedBy,
+				})
+				refunded = true
+			}
+		}
+
 		body := fmt.Sprintf("ใบเสนอราคา %s ถูกยกเลิก", quotation.Code)
 		if req.RejectReason != "" {
 			body += " เหตุผล: " + req.RejectReason
+		}
+		if refunded {
+			body += fmt.Sprintf(" (คืนเครดิต %.2f บาท)", quotation.TotalAmount)
 		}
 		_ = u.notifRepo.Create(&entity.Notification{
 			UserID: *quotation.CreatedBy,
@@ -233,15 +338,18 @@ func (u *quotationUsecase) UpdateQuotationStatus(id uint, req *UpdateStatusReque
 	return quotation, nil
 }
 
-func (u *quotationUsecase) UpdateQuotation(id uint, req *UpdateQuotationRequest) (*entity.Quotation, error) {
+func (u *quotationUsecase) UpdateQuotation(id uint, req *UpdateQuotationRequest, allowApproved bool) (*entity.Quotation, error) {
 	quotation, err := u.quotationRepo.FindByID(id)
 	if err != nil {
 		return nil, errors.New("quotation not found")
 	}
-	if quotation.Status != 0 {
+	// Pending quotations are editable normally; approved/cancelled ones only when
+	// the caller is allowed to (master) — see the controller.
+	if quotation.Status != 0 && !allowApproved {
 		return nil, errors.New("ไม่สามารถแก้ไขใบเสนอราคาที่อนุมัติหรือยกเลิกแล้ว")
 	}
 
+	oldTotal := quotation.TotalAmount
 	quotation.MemberID = req.MemberID
 	quotation.Note = req.Note
 
@@ -271,6 +379,37 @@ func (u *quotationUsecase) UpdateQuotation(id uint, req *UpdateQuotationRequest)
 	if err := u.quotationRepo.Update(quotation); err != nil {
 		return nil, err
 	}
+
+	// Reconcile the creator's credits by the change in total, if requested and the
+	// creator's role uses credits. Positive delta charges more, negative refunds.
+	// Overdraw is allowed (balance may go negative), consistent with creation.
+	delta := quotation.TotalAmount - oldTotal
+	if req.AdjustCredits && delta != 0 && quotation.CreatedBy != nil && u.memberRepo.UserUsesCredits(*quotation.CreatedBy) {
+		if member, err := u.memberRepo.FindByUserID(*quotation.CreatedBy); err == nil && member != nil {
+			member.Credits -= delta
+			_ = u.memberRepo.Update(member)
+
+			action := 1 // withdraw (charge more)
+			if delta < 0 {
+				action = 0 // deposit (refund)
+			}
+			amount := delta
+			if amount < 0 {
+				amount = -amount
+			}
+			_ = u.memberRepo.CreateCreditTransaction(&entity.CreditTransaction{
+				MemberID:    member.ID,
+				StoreID:     member.StoreID,
+				BranchID:    member.BranchID,
+				Action:      action,
+				Amount:      amount,
+				Balance:     member.Credits,
+				Description: "ปรับเครดิตจากการแก้ไขใบเสนอราคา " + quotation.Code,
+				CreatedBy:   quotation.CreatedBy,
+			})
+		}
+	}
+
 	return u.quotationRepo.FindByID(id)
 }
 
@@ -282,6 +421,6 @@ func (u *quotationUsecase) DeleteQuotation(id uint) error {
 	return u.quotationRepo.Delete(id)
 }
 
-func (u *quotationUsecase) AddImages(id uint, urls []string) error {
-	return u.quotationRepo.AddImages(id, urls)
+func (u *quotationUsecase) AddImages(id uint, urls []string, imageType string) error {
+	return u.quotationRepo.AddImages(id, urls, imageType)
 }

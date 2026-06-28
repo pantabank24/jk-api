@@ -16,7 +16,10 @@ type QuotationRepository interface {
 	ReplaceItems(quotationID uint, items []entity.QuotationItem) error
 	Delete(id uint) error
 	GenerateCode() (string, error)
-	AddImages(quotationID uint, urls []string) error
+	AddImages(quotationID uint, urls []string, imageType string) error
+	// MarkBillIssued advances a customer bill (a quotation row with is_bill=true)
+	// to "รอตรวจบิล" (status 11) and links it to the master-issued quotation.
+	MarkBillIssued(billID, quotationID uint) error
 }
 
 type quotationRepository struct {
@@ -35,7 +38,8 @@ func (r *quotationRepository) FindAll(storeID *uint, branchID *uint, createdBy *
 	var quotations []entity.Quotation
 	var total int64
 
-	query := r.db.Model(&entity.Quotation{})
+	// Exclude customer bills — they live in the same table but are managed by the bill module.
+	query := r.db.Model(&entity.Quotation{}).Where("quotations.is_bill = ?", false)
 	if storeID != nil {
 		query = query.Where("quotations.store_id = ?", *storeID)
 	}
@@ -69,10 +73,10 @@ func (r *quotationRepository) FindByID(id uint) (*entity.Quotation, error) {
 	return &quotation, nil
 }
 
-func (r *quotationRepository) AddImages(quotationID uint, urls []string) error {
+func (r *quotationRepository) AddImages(quotationID uint, urls []string, imageType string) error {
 	var images []entity.QuotationImage
 	for _, url := range urls {
-		images = append(images, entity.QuotationImage{QuotationID: quotationID, ImageURL: url})
+		images = append(images, entity.QuotationImage{QuotationID: quotationID, ImageURL: url, Type: imageType})
 	}
 	if len(images) == 0 {
 		return nil
@@ -100,8 +104,14 @@ func (r *quotationRepository) Delete(id uint) error {
 	return r.db.Delete(&entity.Quotation{}, id).Error
 }
 
+func (r *quotationRepository) MarkBillIssued(billID, quotationID uint) error {
+	return r.db.Model(&entity.Quotation{}).
+		Where("id = ? AND is_bill = ?", billID, true).
+		Updates(map[string]interface{}{"status": 11, "issued_quotation_id": quotationID}).Error
+}
+
 func (r *quotationRepository) GenerateCode() (string, error) {
 	var count int64
-	r.db.Unscoped().Model(&entity.Quotation{}).Count(&count)
+	r.db.Unscoped().Model(&entity.Quotation{}).Where("is_bill = ?", false).Count(&count)
 	return fmt.Sprintf("QUO%04d", count+1), nil
 }

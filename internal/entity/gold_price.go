@@ -13,5 +13,9 @@ type GoldPrice struct {
 	GoldDate        string    `json:"gold_date"        gorm:"type:varchar(100);default:''"`
 	GoldTime        string    `json:"gold_time"        gorm:"type:varchar(50);default:''"`
 	GoldRound       string    `json:"gold_round"       gorm:"type:varchar(50);default:''"`
-	CreatedAt       time.Time `json:"created_at"`
+	Source          string    `json:"source"           gorm:"type:varchar(20);default:'auto'"` // auto|manual
+	// Validity window for manual overrides (null for auto rows).
+	ValidFrom  *time.Time `json:"valid_from"`
+	ValidUntil *time.Time `json:"valid_until"`
+	CreatedAt  time.Time  `json:"created_at"`
 }

@@ -9,6 +9,7 @@ import (
 
 	"jk-api/internal/middleware"
 	"jk-api/internal/module/quotation/usecase"
+	"jk-api/internal/service"
 	"jk-api/pkg/response"
 
 	"github.com/gofiber/fiber/v2"
@@ -33,6 +34,14 @@ func (ctrl *QuotationController) CreateQuotation(c *fiber.Ctx) error {
 		return response.BadRequest(c, "ต้องมีรายการอย่างน้อย 1 รายการ")
 	}
 
+	// Block creation outside sale hours.
+	if status := service.GetSalesStatus(ctrl.db); !status.IsOpen {
+		return response.BadRequest(c, fmt.Sprintf("ขณะนี้ปิดทำการ ไม่สามารถออกใบเสนอราคาได้ (เวลาทำการ %s - %s น.)", status.OpenTime, status.CloseTime))
+	}
+
+	// Stamp the gold-price round in effect now (for reporting).
+	req.GoldRound, req.GoldPriceID = service.CurrentRound(ctrl.db)
+
 	// Always derive store/branch from JWT token based on role
 	roleName := middleware.GetRoleName(c)
 	switch roleName {
@@ -41,20 +50,23 @@ func (ctrl *QuotationController) CreateQuotation(c *fiber.Ctx) error {
 		if storeID := middleware.GetStoreID(c); storeID != nil {
 			req.StoreID = storeID
 		}
-	case "branch", "employee":
-		// Branch/Employee must use their assigned store AND branch
+	case "employee":
+		// Employee must use their assigned store AND branch
 		if storeID := middleware.GetStoreID(c); storeID != nil {
 			req.StoreID = storeID
 		}
 		if branchID := middleware.GetBranchID(c); branchID != nil {
 			req.BranchID = branchID
 		}
-	// master: StoreID/BranchID remain nil (allowed)
+	default:
+		// master: not tied to a store — use the store chosen in the payload (for
+		// the receipt header / reporting); branch stays nil.
+		req.StoreID = req.PayloadStoreID
 	}
 
-	// Roles without credits.use permission bypass the credit check (master, owner, branch).
+	// Quotations from roles holding credits.use deduct credits on creation.
 	// Use strict lookup (no master shortcut) since credits.use is a constraint, not a privilege.
-	req.AutoApprove = !middleware.HasPermissionStrict(ctrl.db, c, "credits.use")
+	req.UsesCredits = middleware.HasPermissionStrict(ctrl.db, c, "credits.use")
 	req.CreatedByUserID = middleware.GetUserID(c)
 
 	quotation, err := ctrl.quotationUsecase.CreateQuotation(&req)
@@ -81,7 +93,7 @@ func (ctrl *QuotationController) GetAllQuotations(c *fiber.Ctx) error {
 		// Employee sees only their own quotations
 		if roleName == "employee" {
 			userID := middleware.GetUserID(c)
-			createdBy = userID
+			createdBy = &userID
 		}
 	} else {
 		if sid := c.Query("store_id"); sid != "" {
@@ -138,15 +150,11 @@ func (ctrl *QuotationController) UpdateQuotationStatus(c *fiber.Ctx) error {
 		return response.BadRequest(c, "Invalid request body")
 	}
 
-	// Only owner/master can approve (status=1)
-	if req.Status == 1 {
-		roleName := middleware.GetRoleName(c)
-		if roleName != "master" && roleName != "owner" {
-			return response.Forbidden(c, "ไม่มีสิทธิ์อนุมัติใบเสนอราคา")
-		}
-	}
-
-	quotation, err := ctrl.quotationUsecase.UpdateQuotationStatus(uint(id), &req)
+	// Authorization is governed entirely by the quotations.update permission on
+	// this route — no extra role-name gate. Approving (status=1) is part of that
+	// permission's scope ("แก้ไข/อนุมัติ/ยกเลิก").
+	// Only master may change an already-approved quotation (e.g. cancel it).
+	quotation, err := ctrl.quotationUsecase.UpdateQuotationStatus(uint(id), &req, middleware.IsMaster(c))
 	if err != nil {
 		return response.BadRequest(c, err.Error())
 	}
@@ -164,7 +172,8 @@ func (ctrl *QuotationController) UpdateQuotation(c *fiber.Ctx) error {
 		return response.BadRequest(c, "Invalid request body")
 	}
 
-	quotation, err := ctrl.quotationUsecase.UpdateQuotation(uint(id), &req)
+	// Only master may edit a quotation that is already approved/cancelled.
+	quotation, err := ctrl.quotationUsecase.UpdateQuotation(uint(id), &req, middleware.IsMaster(c))
 	if err != nil {
 		return response.BadRequest(c, err.Error())
 	}
@@ -199,6 +208,12 @@ func (ctrl *QuotationController) UploadImages(c *fiber.Ctx) error {
 		return response.BadRequest(c, "No images provided")
 	}
 
+	// Image category (before_melt / after_melt / signature). Optional.
+	imageType := c.FormValue("type")
+	if imageType == "" {
+		imageType = c.Query("type")
+	}
+
 	dir := fmt.Sprintf("./uploads/quotations/%d", id)
 	if err := os.MkdirAll(dir, os.ModePerm); err != nil {
 		return response.InternalServerError(c, "Failed to create directory")
@@ -215,7 +230,7 @@ func (ctrl *QuotationController) UploadImages(c *fiber.Ctx) error {
 		urls = append(urls, fmt.Sprintf("/uploads/quotations/%d/%s", id, filename))
 	}
 
-	if err := ctrl.quotationUsecase.AddImages(uint(id), urls); err != nil {
+	if err := ctrl.quotationUsecase.AddImages(uint(id), urls, imageType); err != nil {
 		return response.InternalServerError(c, err.Error())
 	}
 	return response.Success(c, "Images uploaded", urls)
