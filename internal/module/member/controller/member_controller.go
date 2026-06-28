@@ -99,6 +99,13 @@ func (ctrl *MemberController) GetAllMembers(c *fiber.Ctx) error {
 		roleName := middleware.GetRoleName(c)
 		if roleName != "owner" {
 			branchID = middleware.GetBranchID(c)
+		} else {
+			// Owner can filter by a specific branch via query param
+			if bid := c.Query("branch_id"); bid != "" {
+				id, _ := strconv.ParseUint(bid, 10, 32)
+				uid := uint(id)
+				branchID = &uid
+			}
 		}
 	} else {
 		if sid := c.Query("store_id"); sid != "" {
@@ -120,7 +127,9 @@ func (ctrl *MemberController) GetAllMembers(c *fiber.Ctx) error {
 		}
 	}
 
-	members, total, err := ctrl.memberUsecase.GetAllMembers(storeID, branchID, page, limit, search, status)
+	memberType := c.Query("member_type") // "customer" | "staff" | ""
+
+	members, total, err := ctrl.memberUsecase.GetAllMembers(storeID, branchID, page, limit, search, status, memberType)
 	if err != nil {
 		return response.InternalServerError(c, err.Error())
 	}
