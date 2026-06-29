@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"jk-api/internal/entity"
+	billRepo "jk-api/internal/module/bill/repository"
 	memberRepo "jk-api/internal/module/member/repository"
 	notificationRepo "jk-api/internal/module/notification/repository"
 	"jk-api/internal/module/quotation/repository"
@@ -81,16 +82,18 @@ type UpdateQuotationRequest struct {
 }
 
 type quotationUsecase struct {
-	quotationRepo repository.QuotationRepository
-	memberRepo    memberRepo.MemberRepository
-	notifRepo     notificationRepo.NotificationRepository
+	quotationRepo   repository.QuotationRepository
+	memberRepo      memberRepo.MemberRepository
+	notifRepo       notificationRepo.NotificationRepository
+	billBalanceRepo billRepo.BillBalanceRepository
 }
 
-func NewQuotationUsecase(quotationRepo repository.QuotationRepository, memberRepo memberRepo.MemberRepository, notifRepo notificationRepo.NotificationRepository) QuotationUsecase {
+func NewQuotationUsecase(quotationRepo repository.QuotationRepository, memberRepo memberRepo.MemberRepository, notifRepo notificationRepo.NotificationRepository, billBalanceRepo billRepo.BillBalanceRepository) QuotationUsecase {
 	return &quotationUsecase{
-		quotationRepo: quotationRepo,
-		memberRepo:    memberRepo,
-		notifRepo:     notifRepo,
+		quotationRepo:   quotationRepo,
+		memberRepo:      memberRepo,
+		notifRepo:       notifRepo,
+		billBalanceRepo: billBalanceRepo,
 	}
 }
 
@@ -202,22 +205,46 @@ func (u *quotationUsecase) CreateQuotation(req *CreateQuotationRequest) (*entity
 	if len(billIDs) == 0 && req.BillID != nil {
 		billIDs = []uint{*req.BillID}
 	}
-	var notifiedUser *uint
-	for _, bid := range billIDs {
-		_ = u.quotationRepo.MarkBillIssued(bid, quotation.ID)
-		if notifiedUser == nil {
-			if bill, err := u.quotationRepo.FindByID(bid); err == nil && bill != nil && bill.CreatedBy != nil {
-				notifiedUser = bill.CreatedBy
+	if len(billIDs) > 0 {
+		// Compute balance diff: quotation total vs. sum of customer's remaining (locked) amounts.
+		// remaining = total_amount - processed_amount for each bill.
+		// positive balance = credit (customer gets more); negative = debt (customer owes).
+		if bills, err := u.quotationRepo.FindBillsByIDs(billIDs); err == nil {
+			var lockedTotal float64
+			var billUserID *uint
+			for i := range bills {
+				// Use the full bill total (not minus processed) because the issued
+				// quotation already includes all partial deliveries combined.
+				lockedTotal += bills[i].TotalAmount
+				if billUserID == nil {
+					billUserID = bills[i].CreatedBy
+				}
+			}
+			balanceDiff := totalAmount - lockedTotal
+			if billUserID != nil && u.billBalanceRepo != nil {
+				qID := quotation.ID
+				desc := fmt.Sprintf("บิล %s — quotation %.2f บาท, locked %.2f บาท", quotation.Code, totalAmount, lockedTotal)
+				_ = u.billBalanceRepo.Record(*billUserID, quotation.StoreID, &qID, balanceDiff, desc)
 			}
 		}
-	}
-	if notifiedUser != nil {
-		_ = u.notifRepo.Create(&entity.Notification{
-			UserID: *notifiedUser,
-			Type:   "bill_issued",
-			Title:  "บิลของคุณถูกออกแล้ว",
-			Body:   fmt.Sprintf("ออกบิลแล้ว %d รายการ สามารถดูรายละเอียดได้", len(billIDs)),
-		})
+
+		var notifiedUser *uint
+		for _, bid := range billIDs {
+			_ = u.quotationRepo.MarkBillIssued(bid, quotation.ID)
+			if notifiedUser == nil {
+				if bill, err := u.quotationRepo.FindByID(bid); err == nil && bill != nil && bill.CreatedBy != nil {
+					notifiedUser = bill.CreatedBy
+				}
+			}
+		}
+		if notifiedUser != nil {
+			_ = u.notifRepo.Create(&entity.Notification{
+				UserID: *notifiedUser,
+				Type:   "bill_issued",
+				Title:  "บิลของคุณถูกออกแล้ว",
+				Body:   fmt.Sprintf("ออกบิลแล้ว %d รายการ สามารถดูรายละเอียดได้", len(billIDs)),
+			})
+		}
 	}
 
 	return quotation, nil

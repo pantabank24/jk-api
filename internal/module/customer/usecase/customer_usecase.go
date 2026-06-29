@@ -17,22 +17,20 @@ type CustomerUsecase interface {
 }
 
 type CreateCustomerRequest struct {
-	Name     string `json:"name" validate:"required"`
-	Email    string `json:"email" validate:"required,email"`
-	Password string `json:"password" validate:"required,min=6"`
-	Phone    string `json:"phone"`
-	StoreID  *uint  `json:"store_id"`
-	BranchID *uint  `json:"branch_id"`
+	Name      string `json:"name" validate:"required"`
+	Email     string `json:"email" validate:"required,email"`
+	Password  string `json:"password" validate:"required,min=6"`
+	Phone     string `json:"phone"`
+	StoreName string `json:"store_name"`
 }
 
 type UpdateCustomerRequest struct {
-	Name     string `json:"name"`
-	Email    string `json:"email" validate:"omitempty,email"`
-	Password string `json:"password"`
-	Phone    string `json:"phone"`
-	StoreID  *uint  `json:"store_id"`
-	BranchID *uint  `json:"branch_id"`
-	IsActive *bool  `json:"is_active"`
+	Name      string `json:"name"`
+	Email     string `json:"email" validate:"omitempty,email"`
+	Password  string `json:"password"`
+	Phone     string `json:"phone"`
+	StoreName *string `json:"store_name"`
+	IsActive  *bool  `json:"is_active"`
 }
 
 type customerUsecase struct {
@@ -47,12 +45,6 @@ func (u *customerUsecase) CreateCustomer(req *CreateCustomerRequest) (*entity.Us
 	if u.customerRepo.ExistsByEmail(req.Email) {
 		return nil, errors.New("email already exists")
 	}
-	if req.StoreID == nil {
-		return nil, errors.New("กรุณาระบุร้าน")
-	}
-	if req.BranchID == nil {
-		return nil, errors.New("กรุณาระบุสาขาของลูกค้า")
-	}
 
 	roleID, err := u.customerRepo.GetCustomerRoleID()
 	if err != nil {
@@ -65,14 +57,13 @@ func (u *customerUsecase) CreateCustomer(req *CreateCustomerRequest) (*entity.Us
 	}
 
 	user := &entity.User{
-		Name:     req.Name,
-		Email:    req.Email,
-		Password: hashed,
-		Phone:    req.Phone,
-		RoleID:   &roleID,
-		StoreID:  req.StoreID,
-		BranchID: req.BranchID,
-		IsActive: true,
+		Name:      req.Name,
+		Email:     req.Email,
+		Password:  hashed,
+		Phone:     req.Phone,
+		StoreName: req.StoreName,
+		RoleID:    &roleID,
+		IsActive:  true,
 	}
 	if err := u.customerRepo.Create(user); err != nil {
 		return nil, err
@@ -119,11 +110,8 @@ func (u *customerUsecase) UpdateCustomer(id uint, req *UpdateCustomerRequest) (*
 	if req.Phone != "" {
 		user.Phone = req.Phone
 	}
-	if req.StoreID != nil {
-		user.StoreID = req.StoreID
-	}
-	if req.BranchID != nil {
-		user.BranchID = req.BranchID
+	if req.StoreName != nil {
+		user.StoreName = *req.StoreName
 	}
 	if req.IsActive != nil {
 		user.IsActive = *req.IsActive

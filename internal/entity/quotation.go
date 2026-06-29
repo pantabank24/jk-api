@@ -33,6 +33,11 @@ type Quotation struct {
 	BillID          *uint       `json:"bill_id" gorm:"index"`
 	IssuedQuotationID *uint     `json:"issued_quotation_id" gorm:"index"`
 	IssuedQuotation *Quotation  `json:"issued_quotation,omitempty" gorm:"foreignKey:IssuedQuotationID;references:ID"`
+	// ProcessedWeight/ProcessedAmount track partial deliveries by the master
+	// (รอส่งเพิ่ม). Accumulated each time the master records a batch of melted gold
+	// without issuing the full quotation yet. Only meaningful for bills (is_bill=true).
+	ProcessedWeight float64 `json:"processed_weight" gorm:"type:decimal(10,4);default:0"`
+	ProcessedAmount float64 `json:"processed_amount" gorm:"type:decimal(14,2);default:0"`
 	Items       []QuotationItem  `json:"items,omitempty" gorm:"foreignKey:QuotationID"`
 	Images      []QuotationImage `json:"images,omitempty" gorm:"foreignKey:QuotationID"`
 	CreatedAt   time.Time       `json:"created_at"`

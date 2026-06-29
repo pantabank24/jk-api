@@ -3,6 +3,7 @@ package v1
 import (
 	"jk-api/config"
 	"jk-api/internal/middleware"
+	billRepo "jk-api/internal/module/bill/repository"
 	memberRepo "jk-api/internal/module/member/repository"
 	notifRepo "jk-api/internal/module/notification/repository"
 	quotationCtrl "jk-api/internal/module/quotation/controller"
@@ -17,7 +18,8 @@ func SetupQuotationRoutes(v1 fiber.Router, db *gorm.DB, cfg *config.Config) {
 	qRepo := quotationRepo.NewQuotationRepository(db)
 	mRepo := memberRepo.NewMemberRepository(db)
 	nRepo := notifRepo.NewNotificationRepository(db)
-	uc := quotationUC.NewQuotationUsecase(qRepo, mRepo, nRepo)
+	bbRepo := billRepo.NewBillBalanceRepository(db)
+	uc := quotationUC.NewQuotationUsecase(qRepo, mRepo, nRepo, bbRepo)
 	ctrl := quotationCtrl.NewQuotationController(uc, db)
 
 	quotations := v1.Group("/quotations", middleware.AuthMiddleware(cfg))

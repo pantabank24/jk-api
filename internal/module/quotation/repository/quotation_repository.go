@@ -20,6 +20,8 @@ type QuotationRepository interface {
 	// MarkBillIssued advances a customer bill (a quotation row with is_bill=true)
 	// to "รอตรวจบิล" (status 11) and links it to the master-issued quotation.
 	MarkBillIssued(billID, quotationID uint) error
+	// FindBillsByIDs fetches bill rows by their IDs (used to compute balance diff when issuing).
+	FindBillsByIDs(ids []uint) ([]entity.Quotation, error)
 }
 
 type quotationRepository struct {
@@ -108,6 +110,12 @@ func (r *quotationRepository) MarkBillIssued(billID, quotationID uint) error {
 	return r.db.Model(&entity.Quotation{}).
 		Where("id = ? AND is_bill = ?", billID, true).
 		Updates(map[string]interface{}{"status": 11, "issued_quotation_id": quotationID}).Error
+}
+
+func (r *quotationRepository) FindBillsByIDs(ids []uint) ([]entity.Quotation, error) {
+	var bills []entity.Quotation
+	err := r.db.Where("id IN ? AND is_bill = ?", ids, true).Find(&bills).Error
+	return bills, err
 }
 
 func (r *quotationRepository) GenerateCode() (string, error) {

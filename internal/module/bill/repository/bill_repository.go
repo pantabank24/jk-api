@@ -25,6 +25,13 @@ type BillRepository interface {
 	GenerateCode() (string, error)
 	AddImages(billID uint, urls []string) error
 	CountUnfinished(storeID *uint, branchID *uint, createdBy *uint) (int64, error)
+	// PartialDeliver accumulates processed_weight and processed_amount for a bill
+	// when the master records a partial delivery without issuing the full quotation.
+	PartialDeliver(billID uint, weight, amount float64) (*entity.Quotation, error)
+	// LogDelivery appends one delivery-session record for audit/display.
+	LogDelivery(billID uint, weight, amount float64, note string) error
+	// GetDeliveryLogs returns all delivery-session records for a bill, oldest first.
+	GetDeliveryLogs(billID uint) ([]entity.BillDeliveryLog, error)
 }
 
 type billRepository struct {
@@ -140,6 +147,34 @@ func (r *billRepository) AddImages(billID uint, urls []string) error {
 		return nil
 	}
 	return r.db.Create(&images).Error
+}
+
+func (r *billRepository) LogDelivery(billID uint, weight, amount float64, note string) error {
+	return r.db.Create(&entity.BillDeliveryLog{
+		BillID: billID,
+		Weight: weight,
+		Amount: amount,
+		Note:   note,
+	}).Error
+}
+
+func (r *billRepository) GetDeliveryLogs(billID uint) ([]entity.BillDeliveryLog, error) {
+	var logs []entity.BillDeliveryLog
+	err := r.db.Where("bill_id = ?", billID).Order("created_at ASC").Find(&logs).Error
+	return logs, err
+}
+
+func (r *billRepository) PartialDeliver(billID uint, weight, amount float64) (*entity.Quotation, error) {
+	err := r.db.Model(&entity.Quotation{}).
+		Where("id = ? AND is_bill = ?", billID, true).
+		Updates(map[string]interface{}{
+			"processed_weight": gorm.Expr("processed_weight + ?", weight),
+			"processed_amount": gorm.Expr("processed_amount + ?", amount),
+		}).Error
+	if err != nil {
+		return nil, err
+	}
+	return r.FindByID(billID)
 }
 
 // CountUnfinished counts bills that are not yet completed/cancelled

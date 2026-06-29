@@ -213,6 +213,52 @@ func (ctrl *BillController) DeleteBill(c *fiber.Ctx) error {
 	return response.Success(c, "Bill deleted", nil)
 }
 
+func (ctrl *BillController) GetDeliveryLogs(c *fiber.Ctx) error {
+	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
+	if err != nil {
+		return response.BadRequest(c, "Invalid bill ID")
+	}
+	logs, err := ctrl.billUsecase.GetDeliveryLogs(uint(id))
+	if err != nil {
+		return response.InternalServerError(c, err.Error())
+	}
+	return response.Success(c, "ok", logs)
+}
+
+func (ctrl *BillController) PartialDeliver(c *fiber.Ctx) error {
+	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
+	if err != nil {
+		return response.BadRequest(c, "Invalid bill ID")
+	}
+	var req usecase.PartialDeliverRequest
+	if err := c.BodyParser(&req); err != nil {
+		return response.BadRequest(c, "Invalid request body")
+	}
+	bill, err := ctrl.billUsecase.PartialDeliverBill(uint(id), &req)
+	if err != nil {
+		return response.BadRequest(c, err.Error())
+	}
+	return response.Success(c, "Partial delivery recorded", bill)
+}
+
+func (ctrl *BillController) GetBillBalance(c *fiber.Ctx) error {
+	var userID uint
+	if id := c.Query("user_id"); id != "" {
+		parsed, err := strconv.ParseUint(id, 10, 32)
+		if err != nil {
+			return response.BadRequest(c, "Invalid user_id")
+		}
+		userID = uint(parsed)
+	} else {
+		userID = middleware.GetUserID(c)
+	}
+	balance, history, err := ctrl.billUsecase.GetBillBalance(userID)
+	if err != nil {
+		return response.InternalServerError(c, err.Error())
+	}
+	return response.Success(c, "ok", fiber.Map{"balance": balance, "history": history})
+}
+
 func (ctrl *BillController) UploadImages(c *fiber.Ctx) error {
 	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
 	if err != nil {

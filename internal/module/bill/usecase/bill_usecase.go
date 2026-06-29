@@ -20,6 +20,9 @@ type BillUsecase interface {
 	DeleteBill(id uint) error
 	AddImages(id uint, urls []string) error
 	CountUnfinished(storeID *uint, branchID *uint, createdBy *uint) (int64, error)
+	PartialDeliverBill(id uint, req *PartialDeliverRequest) (*entity.Quotation, error)
+	GetBillBalance(userID uint) (float64, []entity.BillBalance, error)
+	GetDeliveryLogs(billID uint) ([]entity.BillDeliveryLog, error)
 }
 
 type CreateBillRequest struct {
@@ -56,13 +59,19 @@ type UpdateBillRequest struct {
 	Items []CreateBillItemRequest `json:"items"`
 }
 
-type billUsecase struct {
-	billRepo  repository.BillRepository
-	notifRepo notificationRepo.NotificationRepository
+type PartialDeliverRequest struct {
+	Weight float64 `json:"weight"`
+	Amount float64 `json:"amount"`
 }
 
-func NewBillUsecase(billRepo repository.BillRepository, notifRepo notificationRepo.NotificationRepository) BillUsecase {
-	return &billUsecase{billRepo: billRepo, notifRepo: notifRepo}
+type billUsecase struct {
+	billRepo        repository.BillRepository
+	billBalanceRepo repository.BillBalanceRepository
+	notifRepo       notificationRepo.NotificationRepository
+}
+
+func NewBillUsecase(billRepo repository.BillRepository, billBalanceRepo repository.BillBalanceRepository, notifRepo notificationRepo.NotificationRepository) BillUsecase {
+	return &billUsecase{billRepo: billRepo, billBalanceRepo: billBalanceRepo, notifRepo: notifRepo}
 }
 
 func (u *billUsecase) CreateBill(req *CreateBillRequest) (*entity.Quotation, error) {
@@ -269,6 +278,41 @@ func (u *billUsecase) AddImages(id uint, urls []string) error {
 
 func (u *billUsecase) CountUnfinished(storeID *uint, branchID *uint, createdBy *uint) (int64, error) {
 	return u.billRepo.CountUnfinished(storeID, branchID, createdBy)
+}
+
+func (u *billUsecase) PartialDeliverBill(id uint, req *PartialDeliverRequest) (*entity.Quotation, error) {
+	if req.Weight <= 0 || req.Amount <= 0 {
+		return nil, errors.New("weight and amount must be greater than zero")
+	}
+	bill, err := u.billRepo.FindByID(id)
+	if err != nil {
+		return nil, errors.New("bill not found")
+	}
+	if bill.Status != repository.StatusPendingIssue {
+		return nil, errors.New("บันทึกส่งบางส่วนได้เฉพาะบิลที่สถานะ 'รอออกบิล' เท่านั้น")
+	}
+	result, err := u.billRepo.PartialDeliver(id, req.Weight, req.Amount)
+	if err != nil {
+		return nil, err
+	}
+	_ = u.billRepo.LogDelivery(id, req.Weight, req.Amount, "รอส่งเพิ่ม")
+	return result, nil
+}
+
+func (u *billUsecase) GetDeliveryLogs(billID uint) ([]entity.BillDeliveryLog, error) {
+	return u.billRepo.GetDeliveryLogs(billID)
+}
+
+func (u *billUsecase) GetBillBalance(userID uint) (float64, []entity.BillBalance, error) {
+	balance, err := u.billBalanceRepo.GetBalance(userID)
+	if err != nil {
+		return 0, nil, err
+	}
+	history, err := u.billBalanceRepo.GetHistory(userID, 50)
+	if err != nil {
+		return 0, nil, err
+	}
+	return balance, history, nil
 }
 
 func (u *billUsecase) notify(bill *entity.Quotation, typ, title, body string) {
