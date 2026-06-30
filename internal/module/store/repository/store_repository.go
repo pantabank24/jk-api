@@ -52,8 +52,15 @@ func (r *storeRepository) Update(store *entity.Store) error {
 	return r.db.Save(store).Error
 }
 
+// Delete soft-deletes the store and cascades a soft-delete to its branches.
+// Users/members under the store are left intact (recoverable).
 func (r *storeRepository) Delete(id uint) error {
-	return r.db.Delete(&entity.Store{}, id).Error
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("store_id = ?", id).Delete(&entity.Branch{}).Error; err != nil {
+			return err
+		}
+		return tx.Delete(&entity.Store{}, id).Error
+	})
 }
 
 func (r *storeRepository) GenerateCode() (string, error) {

@@ -118,7 +118,8 @@ func (r *billRepository) Update(bill *entity.Quotation) error {
 
 func (r *billRepository) ReplaceItems(billID uint, items []entity.QuotationItem) error {
 	return r.db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Where("quotation_id = ?", billID).Delete(&entity.QuotationItem{}).Error; err != nil {
+		// Hard-delete old items on edit (Unscoped) — no soft-deleted clutter.
+		if err := tx.Unscoped().Where("quotation_id = ?", billID).Delete(&entity.QuotationItem{}).Error; err != nil {
 			return err
 		}
 		if len(items) > 0 {
@@ -128,8 +129,34 @@ func (r *billRepository) ReplaceItems(billID uint, items []entity.QuotationItem)
 	})
 }
 
+// Delete soft-deletes the bill and cascades a soft-delete to its items, images,
+// debt/credit balances and delivery logs so the bill drops out of debt totals.
+// Debt balances are keyed to the bill's issued quotation, so we clear both ids.
+// Credit transactions are left intact (no refund) for history.
 func (r *billRepository) Delete(id uint) error {
-	return r.db.Where("is_bill = ?", true).Delete(&entity.Quotation{}, id).Error
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		var bill entity.Quotation
+		if err := tx.Where("is_bill = ?", true).First(&bill, id).Error; err != nil {
+			return err
+		}
+		balanceIDs := []uint{id}
+		if bill.IssuedQuotationID != nil {
+			balanceIDs = append(balanceIDs, *bill.IssuedQuotationID)
+		}
+		if err := tx.Where("quotation_id = ?", id).Delete(&entity.QuotationItem{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("quotation_id = ?", id).Delete(&entity.QuotationImage{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("quotation_id IN ?", balanceIDs).Delete(&entity.BillBalance{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("bill_id = ?", id).Delete(&entity.BillDeliveryLog{}).Error; err != nil {
+			return err
+		}
+		return tx.Where("is_bill = ?", true).Delete(&entity.Quotation{}, id).Error
+	})
 }
 
 func (r *billRepository) GenerateCode() (string, error) {

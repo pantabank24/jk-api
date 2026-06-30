@@ -92,7 +92,9 @@ func (r *quotationRepository) Update(quotation *entity.Quotation) error {
 
 func (r *quotationRepository) ReplaceItems(quotationID uint, items []entity.QuotationItem) error {
 	return r.db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Where("quotation_id = ?", quotationID).Delete(&entity.QuotationItem{}).Error; err != nil {
+		// Hard-delete the old items on edit (Unscoped) so replacing items doesn't
+		// leave a trail of soft-deleted rows.
+		if err := tx.Unscoped().Where("quotation_id = ?", quotationID).Delete(&entity.QuotationItem{}).Error; err != nil {
 			return err
 		}
 		if len(items) > 0 {
@@ -102,8 +104,19 @@ func (r *quotationRepository) ReplaceItems(quotationID uint, items []entity.Quot
 	})
 }
 
+// Delete soft-deletes the quotation and cascades a soft-delete to its items and
+// images. Credit transactions are intentionally left intact (no refund) so the
+// member's history still shows what the credit was spent on.
 func (r *quotationRepository) Delete(id uint) error {
-	return r.db.Delete(&entity.Quotation{}, id).Error
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("quotation_id = ?", id).Delete(&entity.QuotationItem{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("quotation_id = ?", id).Delete(&entity.QuotationImage{}).Error; err != nil {
+			return err
+		}
+		return tx.Delete(&entity.Quotation{}, id).Error
+	})
 }
 
 func (r *quotationRepository) MarkBillIssued(billID, quotationID uint) error {
