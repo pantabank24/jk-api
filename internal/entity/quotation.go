@@ -38,6 +38,22 @@ type Quotation struct {
 	// without issuing the full quotation yet. Only meaningful for bills (is_bill=true).
 	ProcessedWeight float64 `json:"processed_weight" gorm:"type:decimal(10,4);default:0"`
 	ProcessedAmount float64 `json:"processed_amount" gorm:"type:decimal(14,2);default:0"`
+	// CreditsRefunded tracks whether the credit charged for this quotation on
+	// approval has been returned to the creator's member profile (via reject's
+	// refund_credits, edit's adjust_credits, or the bulk credit-reset action).
+	CreditsRefunded bool `json:"credits_refunded" gorm:"default:false"`
+	// Store header snapshot — copied from the Store/Branch at creation time so
+	// reprinting an old quotation later (after the store's info changes) still
+	// shows the header as it was on the day it was issued, instead of live-joining
+	// the Store relation above (which always reflects current data).
+	StoreName    string `json:"store_name"    gorm:"type:varchar(255);default:''"`
+	StoreBranch  string `json:"store_branch"  gorm:"type:varchar(255);default:''"`
+	StoreAddress string `json:"store_address" gorm:"type:text;default:''"`
+	StorePhone   string `json:"store_phone"   gorm:"type:varchar(20);default:''"`
+	StoreTaxID   string `json:"store_tax_id"  gorm:"type:varchar(50);default:''"`
+	StoreTaxName string `json:"store_tax_name" gorm:"type:varchar(255);default:''"`
+	StoreWebsite string `json:"store_website" gorm:"type:varchar(255);default:''"`
+	StoreLogo    string `json:"store_logo"    gorm:"type:varchar(500);default:''"`
 	Items       []QuotationItem  `json:"items,omitempty" gorm:"foreignKey:QuotationID"`
 	Images      []QuotationImage `json:"images,omitempty" gorm:"foreignKey:QuotationID"`
 	CreatedAt   time.Time       `json:"created_at"`

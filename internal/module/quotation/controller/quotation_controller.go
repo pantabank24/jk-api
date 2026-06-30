@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"time"
 
+	"jk-api/internal/entity"
 	"jk-api/internal/middleware"
 	"jk-api/internal/module/quotation/usecase"
 	"jk-api/internal/service"
@@ -69,6 +70,27 @@ func (ctrl *QuotationController) CreateQuotation(c *fiber.Ctx) error {
 		req.StoreID = req.PayloadStoreID
 	}
 
+	// Snapshot the store/branch header now, so reprinting this quotation later
+	// (after the store's info changes) still shows the header as it was today.
+	if req.StoreID != nil {
+		var store entity.Store
+		if err := ctrl.db.First(&store, *req.StoreID).Error; err == nil {
+			req.StoreName = store.Name
+			req.StoreAddress = store.Address
+			req.StorePhone = store.Phone
+			req.StoreTaxID = store.TaxID
+			req.StoreTaxName = store.TaxName
+			req.StoreWebsite = store.Website
+			req.StoreLogo = store.Logo
+		}
+	}
+	if req.BranchID != nil {
+		var branch entity.Branch
+		if err := ctrl.db.First(&branch, *req.BranchID).Error; err == nil {
+			req.StoreBranch = branch.Name
+		}
+	}
+
 	// Quotations from roles holding credits.use deduct credits on creation.
 	// Use strict lookup (no master shortcut) since credits.use is a constraint, not a privilege.
 	req.UsesCredits = middleware.HasPermissionStrict(ctrl.db, c, "credits.use")
@@ -78,6 +100,7 @@ func (ctrl *QuotationController) CreateQuotation(c *fiber.Ctx) error {
 	if err != nil {
 		return response.BadRequest(c, err.Error())
 	}
+	middleware.SetActivityDescription(c, fmt.Sprintf("สร้างใบเสนอราคา %s ให้ %s", quotation.Code, quotation.SignerName))
 	return response.Created(c, "Quotation created", quotation)
 }
 
@@ -163,6 +186,12 @@ func (ctrl *QuotationController) UpdateQuotationStatus(c *fiber.Ctx) error {
 	if err != nil {
 		return response.BadRequest(c, err.Error())
 	}
+	switch req.Status {
+	case 1:
+		middleware.SetActivityDescription(c, fmt.Sprintf("อนุมัติใบเสนอราคา %s", quotation.Code))
+	case 2:
+		middleware.SetActivityDescription(c, fmt.Sprintf("ยกเลิกใบเสนอราคา %s (%s)", quotation.Code, quotation.RejectReason))
+	}
 	return response.Success(c, "Quotation updated", quotation)
 }
 
@@ -182,6 +211,7 @@ func (ctrl *QuotationController) UpdateQuotation(c *fiber.Ctx) error {
 	if err != nil {
 		return response.BadRequest(c, err.Error())
 	}
+	middleware.SetActivityDescription(c, fmt.Sprintf("แก้ไขใบเสนอราคา %s", quotation.Code))
 	return response.Success(c, "Quotation updated", quotation)
 }
 
@@ -191,10 +221,43 @@ func (ctrl *QuotationController) DeleteQuotation(c *fiber.Ctx) error {
 		return response.BadRequest(c, "Invalid quotation ID")
 	}
 
+	// Fetch first to capture the code for the activity log (DeleteQuotation only returns an error).
+	if quotation, err := ctrl.quotationUsecase.GetQuotationByID(uint(id)); err == nil {
+		middleware.SetActivityDescription(c, fmt.Sprintf("ลบใบเสนอราคา %s", quotation.Code))
+	}
+
 	if err := ctrl.quotationUsecase.DeleteQuotation(uint(id)); err != nil {
 		return response.NotFound(c, err.Error())
 	}
 	return response.Success(c, "Quotation deleted", nil)
+}
+
+func (ctrl *QuotationController) PreviewCreditReset(c *fiber.Ctx) error {
+	memberID, err := strconv.ParseUint(c.Params("memberId"), 10, 32)
+	if err != nil {
+		return response.BadRequest(c, "Invalid member ID")
+	}
+
+	preview, err := ctrl.quotationUsecase.PreviewCreditReset(uint(memberID))
+	if err != nil {
+		return response.BadRequest(c, err.Error())
+	}
+	return response.Success(c, "Preview retrieved", preview)
+}
+
+func (ctrl *QuotationController) ResetMemberCredit(c *fiber.Ctx) error {
+	memberID, err := strconv.ParseUint(c.Params("memberId"), 10, 32)
+	if err != nil {
+		return response.BadRequest(c, "Invalid member ID")
+	}
+
+	actingUserID := middleware.GetUserID(c)
+	result, err := ctrl.quotationUsecase.ResetMemberCredit(uint(memberID), actingUserID)
+	if err != nil {
+		return response.BadRequest(c, err.Error())
+	}
+	middleware.SetActivityDescription(c, fmt.Sprintf("รีเซ็ตเครดิตให้สมาชิก #%d จำนวน %d ใบ รวม %.2f บาท", memberID, result.Count, result.Amount))
+	return response.Success(c, "Credit reset", result)
 }
 
 func (ctrl *QuotationController) UploadImages(c *fiber.Ctx) error {

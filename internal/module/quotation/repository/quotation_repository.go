@@ -2,6 +2,7 @@ package repository
 
 import (
 	"fmt"
+	"time"
 
 	"jk-api/internal/entity"
 
@@ -22,6 +23,11 @@ type QuotationRepository interface {
 	MarkBillIssued(billID, quotationID uint) error
 	// FindBillsByIDs fetches bill rows by their IDs (used to compute balance diff when issuing).
 	FindBillsByIDs(ids []uint) ([]entity.Quotation, error)
+	// FindUnrefundedApprovedByCreator returns this creator's approved quotations
+	// whose charged credit hasn't been refunded yet (used by the credit-reset action).
+	FindUnrefundedApprovedByCreator(userID uint) ([]entity.Quotation, error)
+	// MarkCreditsRefunded flags the given quotation IDs as credits_refunded.
+	MarkCreditsRefunded(ids []uint) error
 }
 
 type quotationRepository struct {
@@ -131,8 +137,28 @@ func (r *quotationRepository) FindBillsByIDs(ids []uint) ([]entity.Quotation, er
 	return bills, err
 }
 
+func (r *quotationRepository) FindUnrefundedApprovedByCreator(userID uint) ([]entity.Quotation, error) {
+	var quotations []entity.Quotation
+	err := r.db.Where("created_by = ? AND status = ? AND credits_refunded = ? AND is_bill = ?", userID, 1, false, false).
+		Order("id ASC").Find(&quotations).Error
+	return quotations, err
+}
+
+func (r *quotationRepository) MarkCreditsRefunded(ids []uint) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	return r.db.Model(&entity.Quotation{}).Where("id IN ?", ids).Update("credits_refunded", true).Error
+}
+
 func (r *quotationRepository) GenerateCode() (string, error) {
+	now := time.Now()
+	buddhistYear := now.Year() + 543
+	prefix := fmt.Sprintf("P%02d%02d", buddhistYear%100, int(now.Month()))
+
 	var count int64
-	r.db.Unscoped().Model(&entity.Quotation{}).Where("is_bill = ?", false).Count(&count)
-	return fmt.Sprintf("QUO%04d", count+1), nil
+	r.db.Unscoped().Model(&entity.Quotation{}).
+		Where("is_bill = ? AND code LIKE ?", false, prefix+"%").
+		Count(&count)
+	return fmt.Sprintf("%s%04d", prefix, count+1), nil
 }

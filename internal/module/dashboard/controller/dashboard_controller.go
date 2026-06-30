@@ -19,12 +19,15 @@ func NewDashboardController(db *gorm.DB) *DashboardController {
 }
 
 type DashboardStats struct {
-	MyCredits        float64 `json:"my_credits"`
-	QuotationsToday  int64   `json:"quotations_today"`
-	QuotationsPending int64  `json:"quotations_pending"`
-	QuotationsApproved int64 `json:"quotations_approved"`
-	TotalMembers     int64   `json:"total_members"`
-	TotalQuotations  int64   `json:"total_quotations"`
+	MyCredits         float64 `json:"my_credits"`
+	QuotationsToday   int64   `json:"quotations_today"`
+	QuotationsPending int64   `json:"quotations_pending"`
+	QuotationsApproved int64  `json:"quotations_approved"`
+	TotalMembers      int64   `json:"total_members"`
+	TotalQuotations   int64   `json:"total_quotations"`
+	// Customer-only: their own bills (bills are quotations rows with is_bill=true).
+	MyBillsPending   int64 `json:"my_bills_pending"`   // status 10 (รอออกบิล) or 11 (รอตรวจบิล)
+	MyBillsCompleted int64 `json:"my_bills_completed"` // status 12 (สำเร็จ)
 }
 
 func (ctrl *DashboardController) GetStats(c *fiber.Ctx) error {
@@ -72,6 +75,12 @@ func (ctrl *DashboardController) GetStats(c *fiber.Ctx) error {
 	quotationQuery.Where("status = ?", 0).Count(&stats.QuotationsPending)
 	quotationQuery.Where("status = ?", 1).Count(&stats.QuotationsApproved)
 	memberQuery.Count(&stats.TotalMembers)
+
+	if roleName == "customer" {
+		billQuery := ctrl.db.Table("quotations").Where("deleted_at IS NULL AND is_bill = ? AND created_by = ?", true, userID)
+		billQuery.Where("status IN ?", []int{10, 11}).Count(&stats.MyBillsPending)
+		billQuery.Where("status = ?", 12).Count(&stats.MyBillsCompleted)
+	}
 
 	return response.Success(c, "Dashboard stats retrieved", stats)
 }

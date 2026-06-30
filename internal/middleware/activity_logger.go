@@ -27,10 +27,11 @@ func ActivityLogger(repo logRepo.LogRepository) fiber.Handler {
 		durationMs := time.Since(start).Milliseconds()
 
 		// Copy values before spawning goroutine (fiber context is pooled)
-		method     := c.Method()
-		statusCode := c.Response().StatusCode()
-		ip         := c.IP()
-		userAgent  := c.Get("User-Agent")
+		method      := c.Method()
+		statusCode  := c.Response().StatusCode()
+		ip          := c.IP()
+		userAgent   := c.Get("User-Agent")
+		description := GetActivityDescription(c)
 
 		var userIDPtr *uint
 		if uid := GetUserID(c); uid != 0 {
@@ -39,13 +40,14 @@ func ActivityLogger(repo logRepo.LogRepository) fiber.Handler {
 		}
 
 		log := &entity.ActivityLog{
-			UserID:     userIDPtr,
-			Method:     method,
-			Path:       path,
-			StatusCode: statusCode,
-			IP:         ip,
-			UserAgent:  userAgent,
-			DurationMs: durationMs,
+			UserID:      userIDPtr,
+			Method:      method,
+			Path:        path,
+			Description: description,
+			StatusCode:  statusCode,
+			IP:          ip,
+			UserAgent:   userAgent,
+			DurationMs:  durationMs,
 		}
 
 		go func() { _ = repo.CreateActivityLog(log) }()

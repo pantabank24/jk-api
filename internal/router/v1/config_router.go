@@ -19,6 +19,8 @@ func SetupConfigRoutes(v1 fiber.Router, db *gorm.DB, cfg *config.Config, cronSvc
 	{
 		// Auth-only (no config.read): any user can check whether sales are open.
 		cfgGroup.Get("/sales-status", ctrl.GetSalesStatus)
+		// Auth-only: any user can check whether typing the weight is allowed.
+		cfgGroup.Get("/custom-weight-status", ctrl.GetCustomWeightStatus)
 		cfgGroup.Get("/", middleware.RequirePermission(db, "config.read"), ctrl.GetAll)
 		cfgGroup.Put("/", middleware.RequirePermission(db, "config.update"), ctrl.Update)
 	}

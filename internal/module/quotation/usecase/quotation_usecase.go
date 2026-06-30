@@ -3,6 +3,7 @@ package usecase
 import (
 	"errors"
 	"fmt"
+	"time"
 
 	"jk-api/internal/entity"
 	billRepo "jk-api/internal/module/bill/repository"
@@ -19,6 +20,29 @@ type QuotationUsecase interface {
 	UpdateQuotation(id uint, req *UpdateQuotationRequest, allowApproved bool) (*entity.Quotation, error)
 	DeleteQuotation(id uint) error
 	AddImages(id uint, urls []string, imageType string) error
+	// PreviewCreditReset/ResetMemberCredit bulk-refund the credit charged on a
+	// member's approved-but-not-yet-refunded quotations (see ResetMemberCredit).
+	PreviewCreditReset(memberID uint) (*CreditResetPreview, error)
+	ResetMemberCredit(memberID uint, actingUserID uint) (*CreditResetResult, error)
+}
+
+type CreditResetItem struct {
+	ID          uint      `json:"id"`
+	Code        string    `json:"code"`
+	TotalAmount float64   `json:"total_amount"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
+type CreditResetPreview struct {
+	Count  int               `json:"count"`
+	Amount float64           `json:"amount"`
+	Items  []CreditResetItem `json:"items"`
+}
+
+type CreditResetResult struct {
+	Count   int     `json:"count"`
+	Amount  float64 `json:"amount"`
+	Balance float64 `json:"balance"`
 }
 
 type CreateQuotationRequest struct {
@@ -34,6 +58,17 @@ type CreateQuotationRequest struct {
 	// (set from the latest gold price in the controller) for reporting.
 	GoldRound       string `json:"-"`
 	GoldPriceID     *uint  `json:"-"`
+	// Store/Branch header snapshot — resolved from StoreID/BranchID in the
+	// controller and copied onto the saved quotation, so reprinting later
+	// always shows the header as it was on the day of issue.
+	StoreName    string `json:"-"`
+	StoreBranch  string `json:"-"`
+	StoreAddress string `json:"-"`
+	StorePhone   string `json:"-"`
+	StoreTaxID   string `json:"-"`
+	StoreTaxName string `json:"-"`
+	StoreWebsite string `json:"-"`
+	StoreLogo    string `json:"-"`
 	// PayloadStoreID lets a master assign the quotation to a chosen store (master
 	// has no store_id of their own). Ignored for owner/employee (set from JWT).
 	PayloadStoreID  *uint  `json:"store_id"`
@@ -158,6 +193,14 @@ func (u *quotationUsecase) CreateQuotation(req *CreateQuotationRequest) (*entity
 		SignerPhone: req.SignerPhone,
 		PDPAConsent: req.PDPAConsent,
 		BillID:      req.BillID,
+		StoreName:    req.StoreName,
+		StoreBranch:  req.StoreBranch,
+		StoreAddress: req.StoreAddress,
+		StorePhone:   req.StorePhone,
+		StoreTaxID:   req.StoreTaxID,
+		StoreTaxName: req.StoreTaxName,
+		StoreWebsite: req.StoreWebsite,
+		StoreLogo:    req.StoreLogo,
 		Items:       items,
 	}
 
@@ -450,4 +493,86 @@ func (u *quotationUsecase) DeleteQuotation(id uint) error {
 
 func (u *quotationUsecase) AddImages(id uint, urls []string, imageType string) error {
 	return u.quotationRepo.AddImages(id, urls, imageType)
+}
+
+func (u *quotationUsecase) PreviewCreditReset(memberID uint) (*CreditResetPreview, error) {
+	member, err := u.memberRepo.FindByID(memberID)
+	if err != nil {
+		return nil, errors.New("member not found")
+	}
+	preview := &CreditResetPreview{}
+	if member.UserID == nil {
+		return preview, nil
+	}
+	quotations, err := u.quotationRepo.FindUnrefundedApprovedByCreator(*member.UserID)
+	if err != nil {
+		return nil, err
+	}
+	preview.Count = len(quotations)
+	for _, q := range quotations {
+		preview.Amount += q.TotalAmount
+		preview.Items = append(preview.Items, CreditResetItem{ID: q.ID, Code: q.Code, TotalAmount: q.TotalAmount, CreatedAt: q.CreatedAt})
+	}
+	return preview, nil
+}
+
+// ResetMemberCredit bulk-refunds the credit charged on this member's approved
+// quotations that haven't been refunded yet (status=1, credits_refunded=false),
+// then flags them refunded so a repeat call doesn't double-credit. This covers
+// quotations that stay "approved" forever — the only other refund paths are
+// rejecting an approved quotation or a master's credit-adjusting edit.
+func (u *quotationUsecase) ResetMemberCredit(memberID uint, actingUserID uint) (*CreditResetResult, error) {
+	member, err := u.memberRepo.FindByID(memberID)
+	if err != nil {
+		return nil, errors.New("member not found")
+	}
+	if member.UserID == nil {
+		return nil, errors.New("สมาชิกนี้ไม่มีบัญชีผู้ใช้ที่ผูกกับใบเสนอราคา")
+	}
+	if !u.memberRepo.UserUsesCredits(*member.UserID) {
+		return nil, errors.New("สมาชิกนี้ไม่ได้ใช้ระบบเครดิต")
+	}
+
+	quotations, err := u.quotationRepo.FindUnrefundedApprovedByCreator(*member.UserID)
+	if err != nil {
+		return nil, err
+	}
+	if len(quotations) == 0 {
+		return nil, errors.New("ไม่มีรายการที่ต้องคืนเครดิต")
+	}
+
+	var ids []uint
+	var totalRefund float64
+	balance := member.Credits
+	for _, q := range quotations {
+		balance += q.TotalAmount
+		totalRefund += q.TotalAmount
+		ids = append(ids, q.ID)
+		_ = u.memberRepo.CreateCreditTransaction(&entity.CreditTransaction{
+			MemberID:    member.ID,
+			StoreID:     member.StoreID,
+			BranchID:    member.BranchID,
+			Action:      0, // deposit (refund)
+			Amount:      q.TotalAmount,
+			Balance:     balance,
+			Description: "รีเซ็ตเครดิต — คืนยอดใบเสนอราคา " + q.Code,
+			CreatedBy:   &actingUserID,
+		})
+	}
+	member.Credits = balance
+	if err := u.memberRepo.Update(member); err != nil {
+		return nil, err
+	}
+	if err := u.quotationRepo.MarkCreditsRefunded(ids); err != nil {
+		return nil, err
+	}
+
+	_ = u.notifRepo.Create(&entity.Notification{
+		UserID: *member.UserID,
+		Type:   "credit_reset",
+		Title:  "รีเซ็ตเครดิต",
+		Body:   fmt.Sprintf("คืนเครดิตจากใบเสนอราคา %d ใบ รวม %.2f บาท คงเหลือ %.2f บาท", len(quotations), totalRefund, member.Credits),
+	})
+
+	return &CreditResetResult{Count: len(quotations), Amount: totalRefund, Balance: member.Credits}, nil
 }

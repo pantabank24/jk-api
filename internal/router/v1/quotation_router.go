@@ -24,6 +24,8 @@ func SetupQuotationRoutes(v1 fiber.Router, db *gorm.DB, cfg *config.Config) {
 
 	quotations := v1.Group("/quotations", middleware.AuthMiddleware(cfg))
 	{
+		quotations.Get("/credit-reset/:memberId/preview", middleware.RequirePermission(db, "credits.update"), ctrl.PreviewCreditReset)
+		quotations.Post("/credit-reset/:memberId",         middleware.RequirePermission(db, "credits.update"), ctrl.ResetMemberCredit)
 		quotations.Get("/",       middleware.RequirePermission(db, "quotations.read"),   ctrl.GetAllQuotations)
 		quotations.Get("/:id",    middleware.RequirePermission(db, "quotations.read"),   ctrl.GetQuotationByID)
 		quotations.Post("/",      middleware.RequirePermission(db, "quotations.create"), ctrl.CreateQuotation)

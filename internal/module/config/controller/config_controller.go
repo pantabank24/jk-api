@@ -25,6 +25,13 @@ func (ctrl *ConfigController) GetSalesStatus(c *fiber.Ctx) error {
 	return response.Success(c, "ok", service.GetSalesStatus(ctrl.db))
 }
 
+// GetCustomWeightStatus reports whether customers may type the bill weight
+// directly right now. Available to any authenticated user (not gated by
+// config.read) so customers can see it.
+func (ctrl *ConfigController) GetCustomWeightStatus(c *fiber.Ctx) error {
+	return response.Success(c, "ok", service.GetCustomWeightStatus(ctrl.db))
+}
+
 func (ctrl *ConfigController) GetAll(c *fiber.Ctx) error {
 	configs, err := ctrl.repo.GetAll()
 	if err != nil {

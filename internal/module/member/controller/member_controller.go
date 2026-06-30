@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"fmt"
 	"strconv"
 
 	"jk-api/internal/middleware"
@@ -85,6 +86,7 @@ func (ctrl *MemberController) CreateMember(c *fiber.Ctx) error {
 	if err != nil {
 		return response.BadRequest(c, err.Error())
 	}
+	middleware.SetActivityDescription(c, fmt.Sprintf("เพิ่มสมาชิก %s %s", member.Fname, member.Lname))
 	return response.Created(c, "Member created", member)
 }
 
@@ -164,6 +166,7 @@ func (ctrl *MemberController) UpdateMember(c *fiber.Ctx) error {
 	if err != nil {
 		return response.BadRequest(c, err.Error())
 	}
+	middleware.SetActivityDescription(c, fmt.Sprintf("แก้ไขข้อมูลสมาชิก %s %s", member.Fname, member.Lname))
 	return response.Success(c, "Member updated", member)
 }
 
@@ -171,6 +174,10 @@ func (ctrl *MemberController) DeleteMember(c *fiber.Ctx) error {
 	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
 	if err != nil {
 		return response.BadRequest(c, "Invalid member ID")
+	}
+
+	if member, err := ctrl.memberUsecase.GetMemberByID(uint(id)); err == nil {
+		middleware.SetActivityDescription(c, fmt.Sprintf("ลบสมาชิก %s %s", member.Fname, member.Lname))
 	}
 
 	if err := ctrl.memberUsecase.DeleteMember(uint(id)); err != nil {
@@ -217,6 +224,11 @@ func (ctrl *MemberController) AddCredit(c *fiber.Ctx) error {
 	if err != nil {
 		return response.BadRequest(c, err.Error())
 	}
+	verb := "เพิ่ม"
+	if req.Action == 1 {
+		verb = "หัก"
+	}
+	middleware.SetActivityDescription(c, fmt.Sprintf("%sเครดิต %.2f บาท ให้สมาชิก %s %s", verb, req.Amount, member.Fname, member.Lname))
 	return response.Success(c, "Credit updated", member)
 }
 

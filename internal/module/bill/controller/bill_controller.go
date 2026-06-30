@@ -99,6 +99,7 @@ func (ctrl *BillController) CreateBill(c *fiber.Ctx) error {
 	if err != nil {
 		return response.BadRequest(c, err.Error())
 	}
+	middleware.SetActivityDescription(c, fmt.Sprintf("ลูกค้าสร้างบิลขาย %s", bill.Code))
 	return response.Created(c, "Bill created", bill)
 }
 
@@ -156,6 +157,7 @@ func (ctrl *BillController) IssueBill(c *fiber.Ctx) error {
 	if err != nil {
 		return response.BadRequest(c, err.Error())
 	}
+	middleware.SetActivityDescription(c, fmt.Sprintf("ออกบิล %s ให้ลูกค้า", bill.Code))
 	return response.Success(c, "Bill issued", bill)
 }
 
@@ -172,6 +174,7 @@ func (ctrl *BillController) ApproveBill(c *fiber.Ctx) error {
 	if err != nil {
 		return response.BadRequest(c, err.Error())
 	}
+	middleware.SetActivityDescription(c, fmt.Sprintf("อนุมัติปิดบิล %s", bill.Code))
 	return response.Success(c, "Bill approved", bill)
 }
 
@@ -188,6 +191,7 @@ func (ctrl *BillController) CancelBill(c *fiber.Ctx) error {
 	if err != nil {
 		return response.BadRequest(c, err.Error())
 	}
+	middleware.SetActivityDescription(c, fmt.Sprintf("ยกเลิกบิล %s", bill.Code))
 	return response.Success(c, "Bill cancelled", bill)
 }
 
@@ -212,6 +216,10 @@ func (ctrl *BillController) DeleteBill(c *fiber.Ctx) error {
 	if err != nil {
 		return response.BadRequest(c, "Invalid bill ID")
 	}
+	if bill, err := ctrl.billUsecase.GetBillByID(uint(id)); err == nil {
+		middleware.SetActivityDescription(c, fmt.Sprintf("ลบบิล %s", bill.Code))
+	}
+
 	if err := ctrl.billUsecase.DeleteBill(uint(id)); err != nil {
 		return response.NotFound(c, err.Error())
 	}

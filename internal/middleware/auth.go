@@ -76,3 +76,20 @@ func GetRoleName(c *fiber.Ctx) string {
 func IsMaster(c *fiber.Ctx) bool {
 	return GetRoleName(c) == "master"
 }
+
+// SetActivityDescription lets a controller attach a human-readable summary of
+// the business action it just performed (e.g. "อนุมัติใบเสนอราคา P2607001"),
+// picked up by the ActivityLogger middleware when it persists the log row.
+// Optional — routes that don't call this just log raw method+path as before.
+func SetActivityDescription(c *fiber.Ctx, desc string) {
+	c.Locals("activity_description", desc)
+}
+
+// GetActivityDescription reads back what SetActivityDescription stored, or ""
+// if the route never set one.
+func GetActivityDescription(c *fiber.Ctx) string {
+	if d, ok := c.Locals("activity_description").(string); ok {
+		return d
+	}
+	return ""
+}
