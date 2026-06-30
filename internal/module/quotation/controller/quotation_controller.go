@@ -34,13 +34,18 @@ func (ctrl *QuotationController) CreateQuotation(c *fiber.Ctx) error {
 		return response.BadRequest(c, "ต้องมีรายการอย่างน้อย 1 รายการ")
 	}
 
-	// Block creation outside sale hours.
-	if status := service.GetSalesStatus(ctrl.db); !status.IsOpen {
-		return response.BadRequest(c, fmt.Sprintf("ขณะนี้ปิดทำการ ไม่สามารถออกใบเสนอราคาได้ (เวลาทำการ %s - %s น.)", status.OpenTime, status.CloseTime))
+	// Block creation when closed; otherwise pick the price source for the round.
+	status := service.GetSalesStatus(ctrl.db)
+	if !status.IsOpen {
+		return response.BadRequest(c, "ขณะนี้ปิดทำการ ไม่สามารถออกใบเสนอราคาได้")
 	}
-
-	// Stamp the gold-price round in effect now (for reporting).
-	req.GoldRound, req.GoldPriceID = service.CurrentRound(ctrl.db)
+	if status.PriceMode == service.PriceModeRealtime {
+		// Lock a snapshot of the real-time price for this document.
+		req.GoldRound, req.GoldPriceID = service.SnapshotRealtimeRound(ctrl.db)
+	} else {
+		// Stamp the association gold-price round in effect now (for reporting).
+		req.GoldRound, req.GoldPriceID = service.CurrentRound(ctrl.db)
+	}
 
 	// Always derive store/branch from JWT token based on role
 	roleName := middleware.GetRoleName(c)

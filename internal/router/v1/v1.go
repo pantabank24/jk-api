@@ -42,6 +42,7 @@ func SetupV1Routes(api fiber.Router, db *gorm.DB, cfg *config.Config, cronSvc *s
 	SetupGoldPriceRoutes(v1, db, cfg)
 	SetupMetalPriceRoutes(v1, db, cfg)
 	SetupConfigRoutes(v1, db, cfg, cronSvc)
+	SetupSalesScheduleRoutes(v1, db, cfg)
 	SetupNotificationRoutes(v1, db, cfg)
 }
 

@@ -1,7 +1,10 @@
 package controller
 
 import (
+	"encoding/json"
+	"io"
 	"math"
+	"net/http"
 	"strconv"
 	"time"
 
@@ -14,11 +17,33 @@ import (
 )
 
 type GoldPriceController struct {
-	repo repository.GoldPriceRepository
+	repo        repository.GoldPriceRepository
+	realtimeURL string
 }
 
-func NewGoldPriceController(repo repository.GoldPriceRepository) *GoldPriceController {
-	return &GoldPriceController{repo: repo}
+func NewGoldPriceController(repo repository.GoldPriceRepository, realtimeURL string) *GoldPriceController {
+	return &GoldPriceController{repo: repo, realtimeURL: realtimeURL}
+}
+
+// GetRealtime proxies the latest real-time gold price from the tv-price-svc
+// sidecar. The frontend polls this (instead of hitting the sidecar directly) so
+// the call is authenticated and the sidecar stays internal-only.
+func (ctrl *GoldPriceController) GetRealtime(c *fiber.Ctx) error {
+	client := http.Client{Timeout: 4 * time.Second}
+	resp, err := client.Get(ctrl.realtimeURL + "/xau/latest")
+	if err != nil {
+		return response.Success(c, "เชื่อมต่อราคาเรียลไทม์ไม่ได้", nil)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return response.Success(c, "อ่านราคาเรียลไทม์ไม่ได้", nil)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return response.Success(c, "ข้อมูลราคาเรียลไทม์ผิดรูปแบบ", nil)
+	}
+	return response.Success(c, "Realtime gold price", payload)
 }
 
 func (ctrl *GoldPriceController) GetLatest(c *fiber.Ctx) error {

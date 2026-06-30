@@ -25,6 +25,9 @@ type Config struct {
 	// JWT
 	JWTSecret    string
 	JWTExpiresIn string
+
+	// Real-time gold price sidecar (tv-price-svc)
+	GoldRealtimeURL string
 }
 
 func LoadConfig() *Config {
@@ -50,6 +53,9 @@ func LoadConfig() *Config {
 		// JWT
 		JWTSecret:    getEnv("JWT_SECRET", "your-secret-key"),
 		JWTExpiresIn: getEnv("JWT_EXPIRES_IN", "24h"),
+
+		// Real-time gold price sidecar
+		GoldRealtimeURL: getEnv("GOLD_REALTIME_URL", "http://host.docker.internal:8000"),
 	}
 }
 
