@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"time"
 
+	"jk-api/internal/entity"
 	"jk-api/internal/middleware"
 	"jk-api/internal/module/bill/usecase"
 	"jk-api/internal/service"
@@ -71,6 +72,14 @@ func (ctrl *BillController) CreateBill(c *fiber.Ctx) error {
 	}
 	if len(req.Items) == 0 {
 		return response.BadRequest(c, "ต้องมีรายการอย่างน้อย 1 รายการ")
+	}
+
+	// Block creation when bills_open config is false.
+	var billsOpenCfg entity.SystemConfig
+	if err := ctrl.db.Where("key = ?", "bills_open").First(&billsOpenCfg).Error; err == nil {
+		if billsOpenCfg.Value == "false" {
+			return response.BadRequest(c, "ขณะนี้ปิดรับซื้อ ไม่สามารถสร้างบิลได้")
+		}
 	}
 
 	// Block creation when closed; otherwise pick the price source for the round.

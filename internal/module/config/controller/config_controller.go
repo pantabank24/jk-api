@@ -32,6 +32,17 @@ func (ctrl *ConfigController) GetCustomWeightStatus(c *fiber.Ctx) error {
 	return response.Success(c, "ok", service.GetCustomWeightStatus(ctrl.db))
 }
 
+// GetBillsOpenStatus reports whether customer bill creation is enabled.
+// Available to any authenticated user so customers can check before selling.
+func (ctrl *ConfigController) GetBillsOpenStatus(c *fiber.Ctx) error {
+	cfg, err := ctrl.repo.GetByKey("bills_open")
+	open := true
+	if err == nil {
+		open = cfg.Value != "false"
+	}
+	return response.Success(c, "ok", fiber.Map{"open": open})
+}
+
 func (ctrl *ConfigController) GetAll(c *fiber.Ctx) error {
 	configs, err := ctrl.repo.GetAll()
 	if err != nil {

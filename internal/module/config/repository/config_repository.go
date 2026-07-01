@@ -36,7 +36,9 @@ func (r *configRepository) GetByKey(key string) (*entity.SystemConfig, error) {
 }
 
 func (r *configRepository) Set(key, value string) error {
-	return r.db.Model(&entity.SystemConfig{}).
-		Where("key = ?", key).
-		Update("value", value).Error
+	var cfg entity.SystemConfig
+	if err := r.db.Where("key = ?", key).First(&cfg).Error; err != nil {
+		return r.db.Create(&entity.SystemConfig{Key: key, Value: value}).Error
+	}
+	return r.db.Model(&cfg).Update("value", value).Error
 }

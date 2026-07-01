@@ -93,7 +93,11 @@ func (r *quotationRepository) AddImages(quotationID uint, urls []string, imageTy
 }
 
 func (r *quotationRepository) Update(quotation *entity.Quotation) error {
-	return r.db.Save(quotation).Error
+	// Explicitly omit has-many associations so GORM does not cascade-save the
+	// preloaded Items/Images slices. Without this, db.Save() in GORM v1.25.x
+	// upserts every slice element, re-inserting hard-deleted rows and producing
+	// duplicate items after an edit that calls ReplaceItems then Save.
+	return r.db.Omit("Items", "Images").Save(quotation).Error
 }
 
 func (r *quotationRepository) ReplaceItems(quotationID uint, items []entity.QuotationItem) error {

@@ -446,6 +446,10 @@ func (u *quotationUsecase) UpdateQuotation(id uint, req *UpdateQuotationRequest,
 		}
 	}
 
+	// Clear preloaded slices so db.Save cannot cascade-upsert them.
+	quotation.Items = nil
+	quotation.Images = nil
+
 	if err := u.quotationRepo.Update(quotation); err != nil {
 		return nil, err
 	}

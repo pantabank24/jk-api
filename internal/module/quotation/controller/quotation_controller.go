@@ -35,9 +35,9 @@ func (ctrl *QuotationController) CreateQuotation(c *fiber.Ctx) error {
 		return response.BadRequest(c, "ต้องมีรายการอย่างน้อย 1 รายการ")
 	}
 
-	// Block creation when closed; otherwise pick the price source for the round.
+	// Block creation when closed, unless the caller holds sales.bypass (master always does).
 	status := service.GetSalesStatus(ctrl.db)
-	if !status.IsOpen {
+	if !status.IsOpen && !middleware.HasPermission(ctrl.db, c, "sales.bypass") {
 		return response.BadRequest(c, "ขณะนี้ปิดทำการ ไม่สามารถออกใบเสนอราคาได้")
 	}
 	if status.PriceMode == service.PriceModeRealtime {
