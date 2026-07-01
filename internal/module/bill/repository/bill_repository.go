@@ -32,6 +32,8 @@ type BillRepository interface {
 	LogDelivery(billID uint, weight, amount float64, note string) error
 	// GetDeliveryLogs returns all delivery-session records for a bill, oldest first.
 	GetDeliveryLogs(billID uint) ([]entity.BillDeliveryLog, error)
+	// ClearBills bulk-moves all สำเร็จ (12) bills to เคลียร์บิลแล้ว (14) for a store.
+	ClearBills(storeID *uint) (int64, error)
 }
 
 type billRepository struct {
@@ -230,4 +232,14 @@ const (
 	StatusPendingReview = 11 // รอตรวจบิล
 	StatusCompleted     = 12 // สำเร็จ
 	StatusCancelled     = 13 // ยกเลิก
+	StatusCleared       = 14 // เคลียร์บิลแล้ว
 )
+
+func (r *billRepository) ClearBills(storeID *uint) (int64, error) {
+	query := r.db.Model(&entity.Quotation{}).Where("is_bill = ? AND status = ?", true, StatusCompleted)
+	if storeID != nil {
+		query = query.Where("store_id = ?", *storeID)
+	}
+	result := query.Update("status", StatusCleared)
+	return result.RowsAffected, result.Error
+}

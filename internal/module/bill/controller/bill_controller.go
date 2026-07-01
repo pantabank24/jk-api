@@ -11,6 +11,7 @@ import (
 	"jk-api/internal/middleware"
 	"jk-api/internal/module/bill/usecase"
 	"jk-api/internal/service"
+	"jk-api/pkg/linenotify"
 	"jk-api/pkg/response"
 
 	"github.com/gofiber/fiber/v2"
@@ -184,7 +185,47 @@ func (ctrl *BillController) ApproveBill(c *fiber.Ctx) error {
 		return response.BadRequest(c, err.Error())
 	}
 	middleware.SetActivityDescription(c, fmt.Sprintf("อนุมัติปิดบิล %s", bill.Code))
+	go ctrl.maybeSendLineNotify(bill.StoreID)
 	return response.Success(c, "Bill approved", bill)
+}
+
+func (ctrl *BillController) maybeSendLineNotify(storeID *uint) {
+	var enabledCfg entity.SystemConfig
+	if err := ctrl.db.Where("key = ?", "line_notify_enabled").First(&enabledCfg).Error; err != nil || enabledCfg.Value != "true" {
+		return
+	}
+	var targetCfg entity.SystemConfig
+	if err := ctrl.db.Where("key = ?", "line_notify_target_id").First(&targetCfg).Error; err != nil || targetCfg.Value == "" {
+		return
+	}
+	var thresholdCfg entity.SystemConfig
+	if err := ctrl.db.Where("key = ?", "line_bill_notify_threshold").First(&thresholdCfg).Error; err != nil {
+		return
+	}
+	threshold, _ := strconv.Atoi(thresholdCfg.Value)
+	if threshold <= 0 {
+		return
+	}
+	query := ctrl.db.Model(&entity.Quotation{}).Where("is_bill = ? AND status = ?", true, 12)
+	if storeID != nil {
+		query = query.Where("store_id = ?", *storeID)
+	}
+	var count int64
+	query.Count(&count)
+	if count >= int64(threshold) {
+		msg := fmt.Sprintf("🔔 แจ้งเตือน: มีบิลสำเร็จที่ยังไม่เคลียร์ %d บิล (ถึงเกณฑ์ %d บิล)", count, threshold)
+		_ = linenotify.SendText(targetCfg.Value, msg)
+	}
+}
+
+func (ctrl *BillController) ClearBills(c *fiber.Ctx) error {
+	storeID, _, _ := ctrl.scope(c)
+	count, err := ctrl.billUsecase.ClearBills(storeID)
+	if err != nil {
+		return response.InternalServerError(c, err.Error())
+	}
+	middleware.SetActivityDescription(c, fmt.Sprintf("เคลียร์บิลสำเร็จ %d บิล", count))
+	return response.Success(c, "Bills cleared", fiber.Map{"cleared": count})
 }
 
 func (ctrl *BillController) CancelBill(c *fiber.Ctx) error {

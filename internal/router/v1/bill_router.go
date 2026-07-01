@@ -32,6 +32,7 @@ func SetupBillRoutes(v1 fiber.Router, db *gorm.DB, cfg *config.Config) {
 		bills.Post("/:id/cancel",          middleware.RequirePermission(db, "bills.approve"), ctrl.CancelBill)
 		bills.Get("/:id/delivery-logs",    middleware.RequirePermission(db, "bills.read"),    ctrl.GetDeliveryLogs)
 		bills.Post("/:id/partial-deliver", middleware.RequirePermission(db, "bills.issue"),   ctrl.PartialDeliver)
+		bills.Post("/clear",  middleware.RequirePermission(db, "bills.approve"), ctrl.ClearBills)
 		bills.Delete("/:id",  middleware.RequirePermission(db, "bills.approve"), ctrl.DeleteBill)
 		bills.Post("/:id/images", middleware.RequirePermission(db, "bills.create"), ctrl.UploadImages)
 	}
