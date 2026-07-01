@@ -274,11 +274,16 @@ func (ctrl *BillController) GetBillBalance(c *fiber.Ctx) error {
 	} else {
 		userID = middleware.GetUserID(c)
 	}
-	balance, history, err := ctrl.billUsecase.GetBillBalance(userID)
+	summary, history, err := ctrl.billUsecase.GetBillBalance(userID)
 	if err != nil {
 		return response.InternalServerError(c, err.Error())
 	}
-	return response.Success(c, "ok", fiber.Map{"balance": balance, "history": history})
+	return response.Success(c, "ok", fiber.Map{
+		"balance":      summary.Balance,
+		"total_weight": summary.TotalWeight,
+		"avg_price":    summary.AvgPrice,
+		"history":      history,
+	})
 }
 
 func (ctrl *BillController) UploadImages(c *fiber.Ctx) error {

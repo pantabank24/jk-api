@@ -266,8 +266,21 @@ func (u *quotationUsecase) CreateQuotation(req *CreateQuotationRequest) (*entity
 			balanceDiff := totalAmount - lockedTotal
 			if billUserID != nil && u.billBalanceRepo != nil {
 				qID := quotation.ID
+				// Use customer's bill items (not master's quotation items) so that
+				// weight and avg_price are in the same units as refWeight/refAvgPrice
+				// on the frontend (both derived from customer's bill items).
+				var lockedWeight float64
+				for _, bill := range bills {
+					for _, item := range bill.Items {
+						lockedWeight += item.Weight
+					}
+				}
+				var lockedAvgPrice float64
+				if lockedWeight > 0 {
+					lockedAvgPrice = lockedTotal / lockedWeight
+				}
 				desc := fmt.Sprintf("บิล %s — quotation %.2f บาท, locked %.2f บาท", quotation.Code, totalAmount, lockedTotal)
-				_ = u.billBalanceRepo.Record(*billUserID, quotation.StoreID, &qID, balanceDiff, desc)
+				_ = u.billBalanceRepo.Record(*billUserID, quotation.StoreID, &qID, balanceDiff, lockedWeight, lockedAvgPrice, desc)
 			}
 		}
 

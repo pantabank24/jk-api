@@ -21,7 +21,7 @@ type BillUsecase interface {
 	AddImages(id uint, urls []string) error
 	CountUnfinished(storeID *uint, branchID *uint, createdBy *uint) (int64, error)
 	PartialDeliverBill(id uint, req *PartialDeliverRequest) (*entity.Quotation, error)
-	GetBillBalance(userID uint) (float64, []entity.BillBalance, error)
+	GetBillBalance(userID uint) (repository.BalanceSummary, []entity.BillBalance, error)
 	GetDeliveryLogs(billID uint) ([]entity.BillDeliveryLog, error)
 }
 
@@ -303,16 +303,16 @@ func (u *billUsecase) GetDeliveryLogs(billID uint) ([]entity.BillDeliveryLog, er
 	return u.billRepo.GetDeliveryLogs(billID)
 }
 
-func (u *billUsecase) GetBillBalance(userID uint) (float64, []entity.BillBalance, error) {
-	balance, err := u.billBalanceRepo.GetBalance(userID)
+func (u *billUsecase) GetBillBalance(userID uint) (repository.BalanceSummary, []entity.BillBalance, error) {
+	summary, err := u.billBalanceRepo.GetBalance(userID)
 	if err != nil {
-		return 0, nil, err
+		return repository.BalanceSummary{}, nil, err
 	}
 	history, err := u.billBalanceRepo.GetHistory(userID, 50)
 	if err != nil {
-		return 0, nil, err
+		return repository.BalanceSummary{}, nil, err
 	}
-	return balance, history, nil
+	return summary, history, nil
 }
 
 func (u *billUsecase) notify(bill *entity.Quotation, typ, title, body string) {

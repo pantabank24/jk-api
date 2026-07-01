@@ -137,7 +137,7 @@ func (r *quotationRepository) MarkBillIssued(billID, quotationID uint) error {
 
 func (r *quotationRepository) FindBillsByIDs(ids []uint) ([]entity.Quotation, error) {
 	var bills []entity.Quotation
-	err := r.db.Where("id IN ? AND is_bill = ?", ids, true).Find(&bills).Error
+	err := r.db.Preload("Items").Where("id IN ? AND is_bill = ?", ids, true).Find(&bills).Error
 	return bills, err
 }
 
