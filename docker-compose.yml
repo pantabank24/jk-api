@@ -7,7 +7,8 @@ services:
       POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
       POSTGRES_DB: ${DB_NAME:-jk_db}
     ports:
-      - "${DB_PORT:-5432}:5432"
+      # Bind to localhost only — DB must NOT be exposed to the internet.
+      - "127.0.0.1:${DB_PORT:-5432}:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     restart: unless-stopped
@@ -24,8 +25,14 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: jk-api
+    volumes:
+      # migrations are not bundled in the runner image; mount them so auto-migrate works
+      - ./migrations:/app/migrations:ro
+      # persist uploaded files (avatars, quotation/bill images, logos, news) on the host
+      - ./uploads:/app/uploads
     ports:
-      - "${APP_PORT:-8080}:8080"
+      # Reached via nginx on the host; must NOT be exposed to the internet directly.
+      - "127.0.0.1:${APP_PORT:-8080}:8080"
     depends_on:
       postgres:
         condition: service_healthy
