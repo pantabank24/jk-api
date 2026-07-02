@@ -26,6 +26,28 @@ func NewQuotationController(quotationUsecase usecase.QuotationUsecase, db *gorm.
 	return &QuotationController{quotationUsecase: quotationUsecase, db: db}
 }
 
+// GetLatestSignature returns the most recent signature image a given customer
+// signed on any of their quotations, so the issuer can reuse it instead of
+// asking the customer to re-sign. Returns an empty image_url when none exists.
+func (ctrl *QuotationController) GetLatestSignature(c *fiber.Ctx) error {
+	createdBy, err := strconv.ParseUint(c.Query("created_by"), 10, 32)
+	if err != nil {
+		return response.BadRequest(c, "created_by is required")
+	}
+	var urls []string
+	ctrl.db.Table("quotation_images AS qi").
+		Joins("JOIN quotations q ON q.id = qi.quotation_id").
+		Where("q.created_by = ? AND qi.type = ? AND qi.deleted_at IS NULL AND q.deleted_at IS NULL", uint(createdBy), "signature").
+		Order("qi.id DESC").
+		Limit(1).
+		Pluck("qi.image_url", &urls)
+	url := ""
+	if len(urls) > 0 {
+		url = urls[0]
+	}
+	return response.Success(c, "Latest signature", fiber.Map{"image_url": url})
+}
+
 func (ctrl *QuotationController) CreateQuotation(c *fiber.Ctx) error {
 	var req usecase.CreateQuotationRequest
 	if err := c.BodyParser(&req); err != nil {

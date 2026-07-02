@@ -60,10 +60,24 @@ func (ctrl *BillController) scope(c *fiber.Ctx) (*uint, *uint, *uint) {
 		userID := middleware.GetUserID(c)
 		return nil, nil, &userID
 	case "owner":
-		return middleware.GetStoreID(c), nil, nil
+		// Owners may narrow to one customer's bills (customer detail page);
+		// still scoped to their own store.
+		return middleware.GetStoreID(c), nil, queryCreatedBy(c)
 	default: // employee — locked to store + branch
-		return middleware.GetStoreID(c), middleware.GetBranchID(c), nil
+		return middleware.GetStoreID(c), middleware.GetBranchID(c), queryCreatedBy(c)
 	}
+}
+
+// queryCreatedBy parses the optional created_by query param (a customer's user
+// id). Safe for store-scoped roles because it only narrows their result set.
+func queryCreatedBy(c *fiber.Ctx) *uint {
+	if cb := c.Query("created_by"); cb != "" {
+		if id, err := strconv.ParseUint(cb, 10, 32); err == nil {
+			uid := uint(id)
+			return &uid
+		}
+	}
+	return nil
 }
 
 func (ctrl *BillController) CreateBill(c *fiber.Ctx) error {

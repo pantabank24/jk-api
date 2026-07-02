@@ -5,10 +5,23 @@ import (
 	"math"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
 	"github.com/PuerkitoBio/goquery"
+)
+
+// Conditional-GET cache. The association page (WordPress + W3 Total Cache)
+// serves ETag/Last-Modified, so we echo them back via If-None-Match /
+// If-Modified-Since. When the price hasn't changed the server replies 304 with
+// an empty body and we reuse the last parse instead of re-downloading ~114KB —
+// this keeps frequent polling gentle on the upstream.
+var (
+	cacheMu      sync.Mutex
+	lastETag     string
+	lastModified string
+	lastData     *ScrapedData
 )
 
 type ScrapedData struct {
@@ -38,11 +51,26 @@ func Fetch() (*ScrapedData, error) {
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36")
 	req.Header.Set("Accept-Language", "th-TH,th;q=0.9,en-US;q=0.8")
 
+	cacheMu.Lock()
+	etag, modified, cached := lastETag, lastModified, lastData
+	cacheMu.Unlock()
+	if etag != "" {
+		req.Header.Set("If-None-Match", etag)
+	}
+	if modified != "" {
+		req.Header.Set("If-Modified-Since", modified)
+	}
+
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("ไม่สามารถเชื่อมต่อได้: %w", err)
 	}
 	defer resp.Body.Close()
+
+	// Unchanged since last fetch — reuse the cached parse, skip the download.
+	if resp.StatusCode == http.StatusNotModified && cached != nil {
+		return cached, nil
+	}
 
 	doc, err := goquery.NewDocumentFromReader(resp.Body)
 	if err != nil {
@@ -100,6 +128,14 @@ func Fetch() (*ScrapedData, error) {
 	if data.BarBuy == 0 && data.BarSell == 0 {
 		return nil, fmt.Errorf("ไม่พบข้อมูลราคาทอง")
 	}
+
+	// Remember validators + parse so the next poll can go conditional.
+	cacheMu.Lock()
+	lastETag = resp.Header.Get("ETag")
+	lastModified = resp.Header.Get("Last-Modified")
+	lastData = data
+	cacheMu.Unlock()
+
 	return data, nil
 }
 

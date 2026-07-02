@@ -23,5 +23,13 @@ func SetupCustomerRoutes(v1 fiber.Router, db *gorm.DB, cfg *config.Config) {
 		customers.Post("/",    middleware.RequirePermission(db, "customers.create"), ctrl.CreateCustomer)
 		customers.Put("/:id",  middleware.RequirePermission(db, "customers.update"), ctrl.UpdateCustomer)
 		customers.Delete("/:id", middleware.RequirePermission(db, "customers.delete"), ctrl.DeleteCustomer)
+
+		// Customer profile picture
+		customers.Post("/:id/avatar", middleware.RequirePermission(db, "customers.update"), ctrl.UploadAvatar)
+
+		// Customer documents (images / pdf / docx / xlsx)
+		customers.Get("/:id/documents",           middleware.RequirePermission(db, "customers.read"),   ctrl.GetDocuments)
+		customers.Post("/:id/documents",          middleware.RequirePermission(db, "customers.update"), ctrl.UploadDocuments)
+		customers.Delete("/:id/documents/:docId", middleware.RequirePermission(db, "customers.update"), ctrl.DeleteDocument)
 	}
 }

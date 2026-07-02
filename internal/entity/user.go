@@ -19,6 +19,8 @@ type User struct {
 	Email     string         `json:"email" gorm:"type:varchar(255);uniqueIndex;not null"`
 	Password  string         `json:"-" gorm:"type:varchar(255);not null"`
 	Phone     string         `json:"phone" gorm:"type:varchar(20);default:''"`
+	Address   string         `json:"address" gorm:"type:text;default:''"`
+	TaxID     string         `json:"tax_id" gorm:"type:varchar(50);default:''"`
 	Avatar    string         `json:"avatar" gorm:"type:varchar(500);default:''"`
 	IsActive  bool           `json:"is_active" gorm:"default:true"`
 	CreatedAt time.Time      `json:"created_at"`

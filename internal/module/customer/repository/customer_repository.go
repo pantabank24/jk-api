@@ -18,6 +18,12 @@ type CustomerRepository interface {
 	Update(user *entity.User) error
 	Delete(id uint) error
 	ExistsByEmail(email string) bool
+
+	// Documents uploaded for a customer.
+	CreateDocument(doc *entity.CustomerDocument) error
+	FindDocuments(userID uint) ([]entity.CustomerDocument, error)
+	FindDocumentByID(id uint) (*entity.CustomerDocument, error)
+	DeleteDocument(id uint) error
 }
 
 type customerRepository struct {
@@ -97,4 +103,26 @@ func (r *customerRepository) ExistsByEmail(email string) bool {
 	var count int64
 	r.db.Model(&entity.User{}).Where("email = ?", email).Count(&count)
 	return count > 0
+}
+
+func (r *customerRepository) CreateDocument(doc *entity.CustomerDocument) error {
+	return r.db.Create(doc).Error
+}
+
+func (r *customerRepository) FindDocuments(userID uint) ([]entity.CustomerDocument, error) {
+	var docs []entity.CustomerDocument
+	err := r.db.Where("user_id = ?", userID).Order("id DESC").Find(&docs).Error
+	return docs, err
+}
+
+func (r *customerRepository) FindDocumentByID(id uint) (*entity.CustomerDocument, error) {
+	var doc entity.CustomerDocument
+	if err := r.db.First(&doc, id).Error; err != nil {
+		return nil, err
+	}
+	return &doc, nil
+}
+
+func (r *customerRepository) DeleteDocument(id uint) error {
+	return r.db.Delete(&entity.CustomerDocument{}, id).Error
 }

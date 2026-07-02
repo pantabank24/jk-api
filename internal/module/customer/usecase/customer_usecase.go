@@ -13,7 +13,13 @@ type CustomerUsecase interface {
 	GetAllCustomers(page, limit int, storeID, branchID *uint, search string) ([]entity.User, int64, error)
 	GetCustomerByID(id uint) (*entity.User, error)
 	UpdateCustomer(id uint, req *UpdateCustomerRequest) (*entity.User, error)
+	UpdateAvatar(id uint, avatar string) (*entity.User, error)
 	DeleteCustomer(id uint) error
+
+	AddDocument(doc *entity.CustomerDocument) error
+	GetDocuments(userID uint) ([]entity.CustomerDocument, error)
+	GetDocumentByID(id uint) (*entity.CustomerDocument, error)
+	DeleteDocument(id uint) error
 }
 
 type CreateCustomerRequest struct {
@@ -22,6 +28,8 @@ type CreateCustomerRequest struct {
 	Password  string `json:"password" validate:"required,min=6"`
 	Phone     string `json:"phone"`
 	StoreName string `json:"store_name"`
+	Address   string `json:"address"`
+	TaxID     string `json:"tax_id"`
 }
 
 type UpdateCustomerRequest struct {
@@ -30,6 +38,8 @@ type UpdateCustomerRequest struct {
 	Password  string `json:"password"`
 	Phone     string `json:"phone"`
 	StoreName *string `json:"store_name"`
+	Address   *string `json:"address"`
+	TaxID     *string `json:"tax_id"`
 	IsActive  *bool  `json:"is_active"`
 }
 
@@ -62,6 +72,8 @@ func (u *customerUsecase) CreateCustomer(req *CreateCustomerRequest) (*entity.Us
 		Password:  hashed,
 		Phone:     req.Phone,
 		StoreName: req.StoreName,
+		Address:   req.Address,
+		TaxID:     req.TaxID,
 		RoleID:    &roleID,
 		IsActive:  true,
 	}
@@ -113,10 +125,28 @@ func (u *customerUsecase) UpdateCustomer(id uint, req *UpdateCustomerRequest) (*
 	if req.StoreName != nil {
 		user.StoreName = *req.StoreName
 	}
+	if req.Address != nil {
+		user.Address = *req.Address
+	}
+	if req.TaxID != nil {
+		user.TaxID = *req.TaxID
+	}
 	if req.IsActive != nil {
 		user.IsActive = *req.IsActive
 	}
 
+	if err := u.customerRepo.Update(user); err != nil {
+		return nil, err
+	}
+	return u.customerRepo.FindByID(id)
+}
+
+func (u *customerUsecase) UpdateAvatar(id uint, avatar string) (*entity.User, error) {
+	user, err := u.customerRepo.FindByID(id)
+	if err != nil {
+		return nil, errors.New("customer not found")
+	}
+	user.Avatar = avatar
 	if err := u.customerRepo.Update(user); err != nil {
 		return nil, err
 	}
@@ -128,4 +158,20 @@ func (u *customerUsecase) DeleteCustomer(id uint) error {
 		return errors.New("customer not found")
 	}
 	return u.customerRepo.Delete(id)
+}
+
+func (u *customerUsecase) AddDocument(doc *entity.CustomerDocument) error {
+	return u.customerRepo.CreateDocument(doc)
+}
+
+func (u *customerUsecase) GetDocuments(userID uint) ([]entity.CustomerDocument, error) {
+	return u.customerRepo.FindDocuments(userID)
+}
+
+func (u *customerUsecase) GetDocumentByID(id uint) (*entity.CustomerDocument, error) {
+	return u.customerRepo.FindDocumentByID(id)
+}
+
+func (u *customerUsecase) DeleteDocument(id uint) error {
+	return u.customerRepo.DeleteDocument(id)
 }

@@ -58,15 +58,21 @@ func (g *GoldPriceCron) stop() {
 }
 
 func (g *GoldPriceCron) start() {
-	// Read config
+	// Read config. Gold is polled often (default every minute) so a new
+	// association round shows up within ~1 min; each poll is cheap thanks to
+	// conditional GET + dedup. Silver keeps its own, slower cadence.
 	autoFetch := true
-	cronExpr := "*/30 * * * *"
+	goldExpr := "* * * * *"
+	silverExpr := "*/30 * * * *"
 
 	if cfg, err := g.configRepo.GetByKey("gold_price_auto_fetch"); err == nil {
 		autoFetch = cfg.Value == "true"
 	}
 	if cfg, err := g.configRepo.GetByKey("gold_price_cron"); err == nil && cfg.Value != "" {
-		cronExpr = cfg.Value
+		goldExpr = cfg.Value
+	}
+	if cfg, err := g.configRepo.GetByKey("silver_price_cron"); err == nil && cfg.Value != "" {
+		silverExpr = cfg.Value
 	}
 
 	if !autoFetch {
@@ -75,22 +81,32 @@ func (g *GoldPriceCron) start() {
 	}
 
 	g.cron = cron.New()
-	_, err := g.cron.AddFunc(cronExpr, func() {
-		g.fetchAndSave()
-		g.fetchSilver()
-	})
-	if err != nil {
-		log.Printf("❌ Invalid cron expression '%s': %v", cronExpr, err)
+	if _, err := g.cron.AddFunc(goldExpr, g.fetchAndSave); err != nil {
+		log.Printf("❌ Invalid gold cron expression '%s': %v", goldExpr, err)
+		return
+	}
+	if _, err := g.cron.AddFunc(silverExpr, g.fetchSilver); err != nil {
+		log.Printf("❌ Invalid silver cron expression '%s': %v", silverExpr, err)
 		return
 	}
 	g.cron.Start()
-	log.Printf("⏰ Gold price cron started with expression: %s", cronExpr)
+	log.Printf("⏰ Metal price cron started (gold: %s, silver: %s)", goldExpr, silverExpr)
 }
 
 func (g *GoldPriceCron) fetchAndSave() {
 	data, err := goldprice.Fetch()
 	if err != nil {
 		log.Printf("⚠️  Gold price fetch failed: %v", err)
+		return
+	}
+	// Skip the insert when the association hasn't published a new price — with
+	// minute-level polling this makes almost every tick a cheap no-op instead of
+	// bloating the table with duplicate rows.
+	if prev, err := g.priceRepo.GetLatestAuto(); err == nil && prev != nil &&
+		prev.BarBuy == data.BarBuy && prev.BarSell == data.BarSell &&
+		prev.OrnamentBuy == data.OrnamentBuy && prev.OrnamentSell == data.OrnamentSell &&
+		prev.GoldRound == data.GoldRound && prev.GoldTime == data.GoldTime &&
+		prev.GoldDate == data.GoldDate {
 		return
 	}
 	gp := &entity.GoldPrice{

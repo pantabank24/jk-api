@@ -11,6 +11,7 @@ import (
 type GoldPriceRepository interface {
 	Create(gp *entity.GoldPrice) error
 	GetLatest() (*entity.GoldPrice, error)
+	GetLatestAuto() (*entity.GoldPrice, error)
 	GetHistory(limit int) ([]entity.GoldPrice, error)
 }
 
@@ -42,6 +43,16 @@ func (r *goldPriceRepository) GetLatest() (*entity.GoldPrice, error) {
 	}
 	// Ultimate fallback: any latest row.
 	if err := r.db.Order("id DESC").First(&gp).Error; err != nil {
+		return nil, err
+	}
+	return &gp, nil
+}
+
+// GetLatestAuto returns the most recent auto-fetched row, ignoring manual
+// overrides — used by the cron to decide whether the scraped price is new.
+func (r *goldPriceRepository) GetLatestAuto() (*entity.GoldPrice, error) {
+	var gp entity.GoldPrice
+	if err := r.db.Where("source = ?", "auto").Order("id DESC").First(&gp).Error; err != nil {
 		return nil, err
 	}
 	return &gp, nil
