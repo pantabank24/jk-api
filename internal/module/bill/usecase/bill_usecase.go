@@ -1,6 +1,7 @@
 package usecase
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -61,8 +62,13 @@ type UpdateBillRequest struct {
 }
 
 type PartialDeliverRequest struct {
-	Weight float64 `json:"weight"`
-	Amount float64 `json:"amount"`
+	Weight float64         `json:"weight"`
+	Amount float64         `json:"amount"`
+	Items  json.RawMessage `json:"items"`
+	// LogOnly records the round's items for display without adding to processed
+	// weight/amount — used for the final batch, whose total the issued quotation
+	// already accounts for (avoids double-counting).
+	LogOnly bool `json:"log_only"`
 }
 
 type billUsecase struct {
@@ -289,6 +295,14 @@ func (u *billUsecase) PartialDeliverBill(id uint, req *PartialDeliverRequest) (*
 	if err != nil {
 		return nil, errors.New("bill not found")
 	}
+	// Final batch: only record its items for display; the issued quotation already
+	// covers this amount, so don't add it to processed weight/amount. Runs BEFORE
+	// the status guard because by save time the bill has already moved past
+	// "รอออกบิล" (the issued quotation was just created).
+	if req.LogOnly {
+		_ = u.billRepo.LogDelivery(id, req.Weight, req.Amount, "รอบสุดท้าย", req.Items)
+		return bill, nil
+	}
 	if bill.Status != repository.StatusPendingIssue {
 		return nil, errors.New("บันทึกส่งบางส่วนได้เฉพาะบิลที่สถานะ 'รอออกบิล' เท่านั้น")
 	}
@@ -296,7 +310,7 @@ func (u *billUsecase) PartialDeliverBill(id uint, req *PartialDeliverRequest) (*
 	if err != nil {
 		return nil, err
 	}
-	_ = u.billRepo.LogDelivery(id, req.Weight, req.Amount, "รอส่งเพิ่ม")
+	_ = u.billRepo.LogDelivery(id, req.Weight, req.Amount, "รอส่งเพิ่ม", req.Items)
 	return result, nil
 }
 

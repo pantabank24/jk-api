@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"encoding/json"
 	"fmt"
 
 	"jk-api/internal/entity"
@@ -29,7 +30,7 @@ type BillRepository interface {
 	// when the master records a partial delivery without issuing the full quotation.
 	PartialDeliver(billID uint, weight, amount float64) (*entity.Quotation, error)
 	// LogDelivery appends one delivery-session record for audit/display.
-	LogDelivery(billID uint, weight, amount float64, note string) error
+	LogDelivery(billID uint, weight, amount float64, note string, items json.RawMessage) error
 	// GetDeliveryLogs returns all delivery-session records for a bill, oldest first.
 	GetDeliveryLogs(billID uint) ([]entity.BillDeliveryLog, error)
 	// ClearBills bulk-moves all สำเร็จ (12) bills to เคลียร์บิลแล้ว (14) for a store.
@@ -178,12 +179,16 @@ func (r *billRepository) AddImages(billID uint, urls []string) error {
 	return r.db.Create(&images).Error
 }
 
-func (r *billRepository) LogDelivery(billID uint, weight, amount float64, note string) error {
+func (r *billRepository) LogDelivery(billID uint, weight, amount float64, note string, items json.RawMessage) error {
+	if len(items) == 0 {
+		items = json.RawMessage("[]")
+	}
 	return r.db.Create(&entity.BillDeliveryLog{
 		BillID: billID,
 		Weight: weight,
 		Amount: amount,
 		Note:   note,
+		Items:  items,
 	}).Error
 }
 
