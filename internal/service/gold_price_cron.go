@@ -80,14 +80,26 @@ func (g *GoldPriceCron) start() {
 		return
 	}
 
+	// A bad expression in DB config must never take the whole cron down — fall
+	// back to the safe default so metal prices keep being fetched even if someone
+	// saves a malformed schedule (e.g. "*/* * * * *").
+	const goldDefault = "* * * * *"
+	const silverDefault = "*/30 * * * *"
+
 	g.cron = cron.New()
 	if _, err := g.cron.AddFunc(goldExpr, g.fetchAndSave); err != nil {
-		log.Printf("❌ Invalid gold cron expression '%s': %v", goldExpr, err)
-		return
+		log.Printf("❌ Invalid gold cron expression '%s': %v — falling back to '%s'", goldExpr, err, goldDefault)
+		goldExpr = goldDefault
+		if _, err := g.cron.AddFunc(goldExpr, g.fetchAndSave); err != nil {
+			log.Printf("❌ Gold cron default '%s' also failed: %v", goldExpr, err)
+		}
 	}
 	if _, err := g.cron.AddFunc(silverExpr, g.fetchSilver); err != nil {
-		log.Printf("❌ Invalid silver cron expression '%s': %v", silverExpr, err)
-		return
+		log.Printf("❌ Invalid silver cron expression '%s': %v — falling back to '%s'", silverExpr, err, silverDefault)
+		silverExpr = silverDefault
+		if _, err := g.cron.AddFunc(silverExpr, g.fetchSilver); err != nil {
+			log.Printf("❌ Silver cron default '%s' also failed: %v", silverExpr, err)
+		}
 	}
 	g.cron.Start()
 	log.Printf("⏰ Metal price cron started (gold: %s, silver: %s)", goldExpr, silverExpr)

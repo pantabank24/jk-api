@@ -6,6 +6,7 @@ import (
 	"jk-api/pkg/response"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/robfig/cron/v3"
 	"gorm.io/gorm"
 )
 
@@ -61,6 +62,15 @@ func (ctrl *ConfigController) Update(c *fiber.Ctx) error {
 	if err := c.BodyParser(&req); err != nil {
 		return response.BadRequest(c, "Invalid request body")
 	}
+
+	// Reject malformed cron expressions up front so a typo can't freeze price
+	// fetching (a bad "gold_price_cron" is what silently killed the cron before).
+	if req.Key == "gold_price_cron" || req.Key == "silver_price_cron" {
+		if _, err := cron.ParseStandard(req.Value); err != nil {
+			return response.BadRequest(c, "รูปแบบ cron ไม่ถูกต้อง (เช่น ทุกนาที = \"* * * * *\", ทุก 30 นาที = \"*/30 * * * *\")")
+		}
+	}
+
 	if err := ctrl.repo.Set(req.Key, req.Value); err != nil {
 		return response.InternalServerError(c, err.Error())
 	}
