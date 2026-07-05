@@ -23,6 +23,10 @@ type BillRepository interface {
 	Update(bill *entity.Quotation) error
 	ReplaceItems(billID uint, items []entity.QuotationItem) error
 	Delete(id uint) error
+	// RevertIssuance moves an issued bill (and its combined group) back to
+	// "รอออกบิล" (10), undoing the issuance side effects (balance ledger, delivery
+	// logs, and the issued quotation) so the master can re-issue cleanly.
+	RevertIssuance(id uint) error
 	GenerateCode() (string, error)
 	AddImages(billID uint, urls []string) error
 	CountUnfinished(storeID *uint, branchID *uint, createdBy *uint) (int64, error)
@@ -159,6 +163,65 @@ func (r *billRepository) Delete(id uint) error {
 			return err
 		}
 		return tx.Where("is_bill = ?", true).Delete(&entity.Quotation{}, id).Error
+	})
+}
+
+// RevertIssuance is the inverse of an issuance: it keeps the bill(s) but resets
+// them to "รอออกบิล" (10) and clears everything the issuance created. Debt
+// balances are keyed to the issued quotation; delivery logs and processed
+// totals are per-bill. Mirrors Delete's cleanup but without removing the bills.
+// Credit transactions are left intact (no refund), consistent with Delete.
+func (r *billRepository) RevertIssuance(id uint) error {
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		var bill entity.Quotation
+		if err := tx.Where("is_bill = ?", true).First(&bill, id).Error; err != nil {
+			return err
+		}
+
+		// No issued quotation (bill was advanced via the plain "ออกบิล" button):
+		// just move it back to รอออกบิล.
+		if bill.IssuedQuotationID == nil {
+			return tx.Model(&entity.Quotation{}).Where("id = ?", id).
+				Update("status", StatusPendingIssue).Error
+		}
+
+		qid := *bill.IssuedQuotationID
+
+		// All bills that were issued together share this quotation.
+		var billIDs []uint
+		if err := tx.Model(&entity.Quotation{}).
+			Where("is_bill = ? AND issued_quotation_id = ?", true, qid).
+			Pluck("id", &billIDs).Error; err != nil {
+			return err
+		}
+
+		// Reset each bill and drop its delivery logs.
+		if err := tx.Model(&entity.Quotation{}).Where("id IN ?", billIDs).
+			Updates(map[string]interface{}{
+				"status":              StatusPendingIssue,
+				"issued_quotation_id": nil,
+				"processed_weight":    0,
+				"processed_amount":    0,
+			}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("bill_id IN ?", billIDs).Delete(&entity.BillDeliveryLog{}).Error; err != nil {
+			return err
+		}
+
+		// Reverse the debt/credit ledger entry recorded for this issuance.
+		if err := tx.Where("quotation_id = ?", qid).Delete(&entity.BillBalance{}).Error; err != nil {
+			return err
+		}
+
+		// Soft-delete the issued quotation and its items/images.
+		if err := tx.Where("quotation_id = ?", qid).Delete(&entity.QuotationItem{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("quotation_id = ?", qid).Delete(&entity.QuotationImage{}).Error; err != nil {
+			return err
+		}
+		return tx.Delete(&entity.Quotation{}, qid).Error
 	})
 }
 

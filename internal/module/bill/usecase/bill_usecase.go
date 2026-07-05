@@ -17,6 +17,7 @@ type BillUsecase interface {
 	IssueBill(id uint, req *UpdateBillStatusRequest) (*entity.Quotation, error)
 	ApproveBill(id uint, req *UpdateBillStatusRequest) (*entity.Quotation, error)
 	CancelBill(id uint, req *UpdateBillStatusRequest) (*entity.Quotation, error)
+	RevertBill(id uint) (*entity.Quotation, error)
 	UpdateBill(id uint, req *UpdateBillRequest) (*entity.Quotation, error)
 	DeleteBill(id uint) error
 	AddImages(id uint, urls []string) error
@@ -230,6 +231,28 @@ func (u *billUsecase) CancelBill(id uint, req *UpdateBillStatusRequest) (*entity
 	}
 	u.notify(bill, "bill_cancelled", "บิลถูกยกเลิก", body)
 	return bill, nil
+}
+
+// RevertBill pulls an issued bill back from รอตรวจบิล (11) to รอออกบิล (10) so the
+// master can fix the quote they issued. The issuance side effects (balance ledger,
+// delivery logs, issued quotation) are undone so a re-issue doesn't double-count.
+func (u *billUsecase) RevertBill(id uint) (*entity.Quotation, error) {
+	bill, err := u.billRepo.FindByID(id)
+	if err != nil {
+		return nil, errors.New("bill not found")
+	}
+	if bill.Status != repository.StatusPendingReview {
+		return nil, errors.New("ย้อนกลับไปแก้ไขได้เฉพาะบิลที่สถานะ 'รอตรวจบิล' เท่านั้น")
+	}
+	if err := u.billRepo.RevertIssuance(id); err != nil {
+		return nil, err
+	}
+	reverted, err := u.billRepo.FindByID(id)
+	if err != nil {
+		return nil, err
+	}
+	u.notify(reverted, "bill_reverted", "บิลถูกดึงกลับไปแก้ไข", fmt.Sprintf("บิล %s ถูกดึงกลับไปแก้ไข สถานะ: รอออกบิล", reverted.Code))
+	return reverted, nil
 }
 
 // UpdateBill edits a bill's content while it is still รอออกบิล (10).

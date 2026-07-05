@@ -203,6 +203,19 @@ func (ctrl *BillController) ApproveBill(c *fiber.Ctx) error {
 	return response.Success(c, "Bill approved", bill)
 }
 
+func (ctrl *BillController) RevertBill(c *fiber.Ctx) error {
+	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
+	if err != nil {
+		return response.BadRequest(c, "Invalid bill ID")
+	}
+	bill, err := ctrl.billUsecase.RevertBill(uint(id))
+	if err != nil {
+		return response.BadRequest(c, err.Error())
+	}
+	middleware.SetActivityDescription(c, fmt.Sprintf("ดึงบิล %s กลับไปแก้ไข", bill.Code))
+	return response.Success(c, "Bill reverted", bill)
+}
+
 func (ctrl *BillController) maybeSendLineNotify(storeID *uint) {
 	var enabledCfg entity.SystemConfig
 	if err := ctrl.db.Where("key = ?", "line_notify_enabled").First(&enabledCfg).Error; err != nil || enabledCfg.Value != "true" {
