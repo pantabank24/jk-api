@@ -15,6 +15,7 @@ type SalesSchedule struct {
 	OpenTime           string     `json:"open_time" gorm:"type:varchar(5);default:'09:30'"`
 	CloseTime          string     `json:"close_time" gorm:"type:varchar(5);default:'16:30'"`
 	RealtimeAfterHours bool       `json:"realtime_after_hours" gorm:"default:false"`
+	RealtimeUntil      string     `json:"realtime_until" gorm:"type:varchar(5);default:''"` // HH:MM cutoff, '' = no limit
 	Note               string     `json:"note" gorm:"type:varchar(255);default:''"`
 	CreatedAt          time.Time  `json:"created_at"`
 	UpdatedAt          time.Time  `json:"updated_at"`

@@ -24,6 +24,7 @@ type SalesStatus struct {
 	OpenTime           string `json:"open_time"`            // effective rule's window
 	CloseTime          string `json:"close_time"`
 	RealtimeAfterHours bool   `json:"realtime_after_hours"` // effective rule
+	RealtimeUntil      string `json:"realtime_until"`       // realtime cutoff, '' = no limit
 	RuleSource         string `json:"rule_source"`          // date|weekday|default
 	Now                string `json:"now"`
 }
@@ -50,6 +51,7 @@ type effectiveRule struct {
 	OpenTime           string
 	CloseTime          string
 	RealtimeAfterHours bool
+	RealtimeUntil      string // HH:MM cutoff for realtime mode, '' = no limit
 	Source             string // date|weekday|default
 }
 
@@ -63,7 +65,8 @@ func resolveRule(db *gorm.DB, now time.Time) effectiveRule {
 		return effectiveRule{
 			Enabled: rangeRule.Enabled, OpenTime: rangeRule.OpenTime,
 			CloseTime: rangeRule.CloseTime, RealtimeAfterHours: rangeRule.RealtimeAfterHours,
-			Source: "range",
+			RealtimeUntil: rangeRule.RealtimeUntil,
+			Source:        "range",
 		}
 	}
 
@@ -75,7 +78,8 @@ func resolveRule(db *gorm.DB, now time.Time) effectiveRule {
 		return effectiveRule{
 			Enabled: wdRule.Enabled, OpenTime: wdRule.OpenTime,
 			CloseTime: wdRule.CloseTime, RealtimeAfterHours: wdRule.RealtimeAfterHours,
-			Source: "weekday",
+			RealtimeUntil: wdRule.RealtimeUntil,
+			Source:        "weekday",
 		}
 	}
 
@@ -85,13 +89,15 @@ func resolveRule(db *gorm.DB, now time.Time) effectiveRule {
 		OpenTime:           configValue(db, "sales_open_time", "09:30"),
 		CloseTime:          configValue(db, "sales_close_time", "16:30"),
 		RealtimeAfterHours: configValue(db, "sales_realtime_after_hours", "false") == "true",
+		RealtimeUntil:      configValue(db, "sales_realtime_until", ""),
 		Source:             "default",
 	}
 }
 
 // GetSalesStatus resolves the current sales mode from the master switch, the
-// schedule rules, and the trading window. Real-time applies to ANY time outside
-// the association window when the effective rule enables it.
+// schedule rules, and the trading window. Real-time applies outside the
+// association window when the effective rule enables it — up to RealtimeUntil
+// when set (close_time → realtime_until, overnight ok), otherwise any time.
 func GetSalesStatus(db *gorm.DB) SalesStatus {
 	master := configValue(db, "sales_enabled", "true") == "true"
 	now := bangkokNow()
@@ -105,7 +111,8 @@ func GetSalesStatus(db *gorm.DB) SalesStatus {
 		mode = PriceModeClosed
 	case withinWindow(nowHM, rule.OpenTime, rule.CloseTime):
 		mode = PriceModeAssociation
-	case rule.RealtimeAfterHours:
+	case rule.RealtimeAfterHours &&
+		(rule.RealtimeUntil == "" || withinWindow(nowHM, rule.CloseTime, rule.RealtimeUntil)):
 		mode = PriceModeRealtime
 	default:
 		mode = PriceModeClosed
@@ -118,6 +125,7 @@ func GetSalesStatus(db *gorm.DB) SalesStatus {
 		OpenTime:           rule.OpenTime,
 		CloseTime:          rule.CloseTime,
 		RealtimeAfterHours: rule.RealtimeAfterHours,
+		RealtimeUntil:      rule.RealtimeUntil,
 		RuleSource:         rule.Source,
 		Now:                nowHM,
 	}

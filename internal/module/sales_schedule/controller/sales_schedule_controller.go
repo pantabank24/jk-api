@@ -37,6 +37,7 @@ type upsertRequest struct {
 	OpenTime           string     `json:"open_time"`
 	CloseTime          string     `json:"close_time"`
 	RealtimeAfterHours bool       `json:"realtime_after_hours"`
+	RealtimeUntil      string     `json:"realtime_until"` // HH:MM, '' = no limit
 	Note               string     `json:"note"`
 }
 
@@ -48,6 +49,9 @@ func (ctrl *SalesScheduleController) Upsert(c *fiber.Ctx) error {
 	if req.Scope != "weekday" && req.Scope != "range" {
 		return response.BadRequest(c, "scope must be 'weekday' or 'range'")
 	}
+	if !validHHMM(req.RealtimeUntil) {
+		return response.BadRequest(c, "realtime_until must be HH:MM or empty")
+	}
 
 	rule := entity.SalesSchedule{
 		ID:                 req.ID,
@@ -56,6 +60,7 @@ func (ctrl *SalesScheduleController) Upsert(c *fiber.Ctx) error {
 		OpenTime:           defaultStr(req.OpenTime, "09:30"),
 		CloseTime:          defaultStr(req.CloseTime, "16:30"),
 		RealtimeAfterHours: req.RealtimeAfterHours,
+		RealtimeUntil:      req.RealtimeUntil,
 		Note:               req.Note,
 	}
 
@@ -104,4 +109,13 @@ func defaultStr(v, def string) string {
 		return def
 	}
 	return v
+}
+
+// validHHMM accepts empty (no cutoff) or a zero-padded HH:MM time.
+func validHHMM(v string) bool {
+	if v == "" {
+		return true
+	}
+	_, err := time.Parse("15:04", v)
+	return err == nil
 }
