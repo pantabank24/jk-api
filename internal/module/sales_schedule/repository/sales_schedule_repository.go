@@ -34,12 +34,14 @@ func (r *salesScheduleRepository) Create(s *entity.SalesSchedule) error {
 
 func (r *salesScheduleRepository) Update(s *entity.SalesSchedule) error {
 	return r.db.Model(&entity.SalesSchedule{}).Where("id = ?", s.ID).Updates(map[string]any{
+		"weekday":              s.Weekday,
 		"start_at":             s.StartAt,
 		"end_at":               s.EndAt,
 		"enabled":              s.Enabled,
 		"open_time":            s.OpenTime,
 		"close_time":           s.CloseTime,
 		"realtime_after_hours": s.RealtimeAfterHours,
+		"realtime_until":       s.RealtimeUntil,
 		"note":                 s.Note,
 	}).Error
 }

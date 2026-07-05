@@ -94,8 +94,10 @@ func Fetch() (*ScrapedData, error) {
 		}
 
 		if tds.Length() == 3 && strings.Contains(first, "ทองรูปพรรณ") {
-			data.OrnamentSell = parsePrice(tds.Eq(1).Text())
-			data.OrnamentBuy = parsePrice(tds.Eq(2).Text())
+			// This summary table's columns are [รับซื้อ, ขายออก] — the opposite
+			// order of the detailed bar table below — so buy=Eq(1), sell=Eq(2).
+			data.OrnamentBuy = parsePrice(tds.Eq(1).Text())
+			data.OrnamentSell = parsePrice(tds.Eq(2).Text())
 		}
 
 		if strings.Contains(first, "วันนี้") {
