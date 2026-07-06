@@ -203,6 +203,27 @@ func (ctrl *BillController) ApproveBill(c *fiber.Ctx) error {
 	return response.Success(c, "Bill approved", bill)
 }
 
+func (ctrl *BillController) RemoveBillItem(c *fiber.Ctx) error {
+	billID, err := strconv.ParseUint(c.Params("id"), 10, 32)
+	if err != nil {
+		return response.BadRequest(c, "Invalid bill ID")
+	}
+	itemID, err := strconv.ParseUint(c.Params("itemId"), 10, 32)
+	if err != nil {
+		return response.BadRequest(c, "Invalid item ID")
+	}
+	bill, deleted, err := ctrl.billUsecase.RemoveBillItem(uint(billID), uint(itemID))
+	if err != nil {
+		return response.BadRequest(c, err.Error())
+	}
+	if deleted {
+		middleware.SetActivityDescription(c, fmt.Sprintf("ลบรายการสุดท้ายและลบบิล #%d", billID))
+		return response.Success(c, "Bill item removed; bill deleted", fiber.Map{"deleted": true})
+	}
+	middleware.SetActivityDescription(c, fmt.Sprintf("ลบรายการในบิล %s", bill.Code))
+	return response.Success(c, "Bill item removed", fiber.Map{"deleted": false, "bill": bill})
+}
+
 func (ctrl *BillController) RevertBill(c *fiber.Ctx) error {
 	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
 	if err != nil {

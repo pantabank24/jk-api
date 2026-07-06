@@ -19,6 +19,9 @@ type BillUsecase interface {
 	CancelBill(id uint, req *UpdateBillStatusRequest) (*entity.Quotation, error)
 	RevertBill(id uint) (*entity.Quotation, error)
 	UpdateBill(id uint, req *UpdateBillRequest) (*entity.Quotation, error)
+	// RemoveBillItem deletes one item from a pending bill; if it was the last item
+	// the whole bill is deleted. The bool reports whether the bill was deleted.
+	RemoveBillItem(billID, itemID uint) (*entity.Quotation, bool, error)
 	DeleteBill(id uint) error
 	AddImages(id uint, urls []string) error
 	CountUnfinished(storeID *uint, branchID *uint, createdBy *uint) (int64, error)
@@ -293,6 +296,37 @@ func (u *billUsecase) UpdateBill(id uint, req *UpdateBillRequest) (*entity.Quota
 		return nil, err
 	}
 	return u.billRepo.FindByID(id)
+}
+
+// RemoveBillItem lets the master drop an item the customer submitted while the bill
+// is still รอออกบิล (10). The bill's total_amount is recomputed; if no items remain
+// the whole bill is deleted (returns deleted=true).
+func (u *billUsecase) RemoveBillItem(billID, itemID uint) (*entity.Quotation, bool, error) {
+	bill, err := u.billRepo.FindByID(billID)
+	if err != nil {
+		return nil, false, errors.New("bill not found")
+	}
+	// Editable while pending (10) or already issued (11). At 11 the repo also keeps
+	// the debt/credit ledger in sync so removing an item is safe even if the master
+	// doesn't re-issue afterwards.
+	if bill.Status != repository.StatusPendingIssue && bill.Status != repository.StatusPendingReview {
+		return nil, false, errors.New("แก้ไขรายการได้เฉพาะบิลที่ยังไม่ปิด")
+	}
+	remaining, err := u.billRepo.RemoveItem(billID, itemID)
+	if err != nil {
+		return nil, false, err
+	}
+	if remaining == 0 {
+		if err := u.billRepo.Delete(billID); err != nil {
+			return nil, false, err
+		}
+		return nil, true, nil
+	}
+	updated, err := u.billRepo.FindByID(billID)
+	if err != nil {
+		return nil, false, err
+	}
+	return updated, false, nil
 }
 
 func (u *billUsecase) DeleteBill(id uint) error {

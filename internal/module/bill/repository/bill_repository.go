@@ -22,6 +22,9 @@ type BillRepository interface {
 	AppendItems(billID uint, items []entity.QuotationItem) error
 	Update(bill *entity.Quotation) error
 	ReplaceItems(billID uint, items []entity.QuotationItem) error
+	// RemoveItem hard-deletes one item from a bill and recomputes its total_amount.
+	// Returns the number of items remaining (0 = the bill has no items left).
+	RemoveItem(billID, itemID uint) (int, error)
 	Delete(id uint) error
 	// RevertIssuance moves an issued bill (and its combined group) back to
 	// "รอออกบิล" (10), undoing the issuance side effects (balance ledger, delivery
@@ -134,6 +137,68 @@ func (r *billRepository) ReplaceItems(billID uint, items []entity.QuotationItem)
 		}
 		return nil
 	})
+}
+
+// RemoveItem hard-deletes one item (scoped to the bill) and recomputes the bill's
+// total_amount from the surviving items. Returns the remaining item count so the
+// caller can drop an emptied bill entirely.
+func (r *billRepository) RemoveItem(billID, itemID uint) (int, error) {
+	var remaining int64
+	err := r.db.Transaction(func(tx *gorm.DB) error {
+		// Read the item (its total/weight) and the bill's issued-quotation link
+		// before deleting — needed to keep an issued bill's ledger in sync.
+		var item entity.QuotationItem
+		if err := tx.Where("id = ? AND quotation_id = ?", itemID, billID).First(&item).Error; err != nil {
+			return err
+		}
+		var bill entity.Quotation
+		if err := tx.Select("id", "issued_quotation_id").Where("id = ?", billID).First(&bill).Error; err != nil {
+			return err
+		}
+
+		if err := tx.Unscoped().Where("id = ? AND quotation_id = ?", itemID, billID).
+			Delete(&entity.QuotationItem{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Model(&entity.QuotationItem{}).Where("quotation_id = ?", billID).
+			Count(&remaining).Error; err != nil {
+			return err
+		}
+		if remaining == 0 {
+			return nil // caller will delete the empty bill (drops its ledger too)
+		}
+		if err := tx.Model(&entity.Quotation{}).Where("id = ?", billID).
+			Update("total_amount", gorm.Expr(
+				"(SELECT COALESCE(SUM(total),0) FROM quotation_items WHERE quotation_id = ? AND deleted_at IS NULL)", billID,
+			)).Error; err != nil {
+			return err
+		}
+
+		// If the bill is already issued, keep its debt/credit ledger consistent:
+		// the locked total drops by the item's total, so ขาด/เกิน (amount) rises by
+		// it, and the reference weight/avg shrink. (No row → no-op.)
+		if bill.IssuedQuotationID != nil {
+			var bal entity.BillBalance
+			if err := tx.Where("quotation_id = ?", *bill.IssuedQuotationID).First(&bal).Error; err == nil {
+				lockedTotal := bal.AvgPrice*bal.Weight - item.Total
+				newWeight := bal.Weight - item.Weight
+				newAvg := 0.0
+				if newWeight > 0 {
+					newAvg = lockedTotal / newWeight
+				}
+				if err := tx.Model(&entity.BillBalance{}).Where("id = ?", bal.ID).
+					Updates(map[string]interface{}{
+						"amount":    bal.Amount + item.Total,
+						"weight":    newWeight,
+						"avg_price": newAvg,
+					}).Error; err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	})
+	return int(remaining), err
 }
 
 // Delete soft-deletes the bill and cascades a soft-delete to its items, images,

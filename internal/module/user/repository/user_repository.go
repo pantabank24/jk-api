@@ -4,6 +4,7 @@ import (
 	"jk-api/internal/entity"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type UserFilter struct {
@@ -85,7 +86,10 @@ func (r *userRepository) FindByEmail(email string) (*entity.User, error) {
 }
 
 func (r *userRepository) Update(user *entity.User) error {
-	return r.db.Save(user).Error
+	// Omit associations so GORM writes the FK columns (role_id/store_id/branch_id)
+	// straight from the struct instead of back-filling them from the stale
+	// preloaded Role/Store/Branch — otherwise role changes silently revert.
+	return r.db.Omit(clause.Associations).Save(user).Error
 }
 
 func (r *userRepository) Delete(id uint) error {
