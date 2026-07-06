@@ -11,6 +11,8 @@ type AuthRepository interface {
 	FindByIDWithRole(id uint) (*entity.User, error)
 	GetPermissionsByRoleID(roleID uint) ([]string, error)
 	GetMemberCreditsByUserID(userID uint) (float64, bool)
+	EmailExistsForOtherUser(email string, excludeID uint) (bool, error)
+	UpdateProfile(userID uint, fields map[string]interface{}) error
 }
 
 type authRepository struct {
@@ -50,6 +52,24 @@ func (r *authRepository) GetMemberCreditsByUserID(userID uint) (float64, bool) {
 		return 0, false
 	}
 	return member.Credits, true
+}
+
+// EmailExistsForOtherUser reports whether the email is already used by a
+// user other than excludeID (used to guard self-service profile updates).
+func (r *authRepository) EmailExistsForOtherUser(email string, excludeID uint) (bool, error) {
+	var count int64
+	err := r.db.Model(&entity.User{}).
+		Where("email = ? AND id <> ?", email, excludeID).
+		Count(&count).Error
+	return count > 0, err
+}
+
+// UpdateProfile applies a partial column update to the user, leaving
+// association / FK columns untouched.
+func (r *authRepository) UpdateProfile(userID uint, fields map[string]interface{}) error {
+	return r.db.Model(&entity.User{}).
+		Where("id = ?", userID).
+		Updates(fields).Error
 }
 
 func (r *authRepository) GetPermissionsByRoleID(roleID uint) ([]string, error) {

@@ -33,5 +33,9 @@ func SetupAuthRoutes(v1 fiber.Router, db *gorm.DB, cfg *config.Config, lRepo log
 		protected := auth.Group("", middleware.AuthMiddleware(cfg))
 		protected.Get("/me", ctrl.GetMe)
 		protected.Post("/refresh", ctrl.RefreshToken)
+		// Self-service profile management (any authenticated user editing themselves)
+		protected.Put("/profile", ctrl.UpdateProfile)
+		protected.Post("/profile/avatar", ctrl.UploadAvatar)
+		protected.Post("/change-password", ctrl.ChangePassword)
 	}
 }

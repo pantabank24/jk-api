@@ -2,6 +2,7 @@ package usecase
 
 import (
 	"errors"
+	"strings"
 	"time"
 
 	"jk-api/internal/module/auth/repository"
@@ -12,6 +13,9 @@ type AuthUsecase interface {
 	Login(req *LoginRequest) (*LoginResponse, error)
 	GetMe(userID uint) (*MeResponse, error)
 	RefreshToken(userID uint) (*TokenResponse, error)
+	UpdateProfile(userID uint, req *UpdateProfileRequest) (*MeResponse, error)
+	ChangePassword(userID uint, req *ChangePasswordRequest) error
+	UpdateAvatar(userID uint, path string) (*MeResponse, error)
 }
 
 type LoginRequest struct {
@@ -34,6 +38,17 @@ type MeResponse struct {
 
 type TokenResponse struct {
 	Token string `json:"token"`
+}
+
+type UpdateProfileRequest struct {
+	Name  string `json:"name"`
+	Email string `json:"email"`
+	Phone string `json:"phone"`
+}
+
+type ChangePasswordRequest struct {
+	OldPassword string `json:"old_password"`
+	NewPassword string `json:"new_password"`
 }
 
 type authUsecase struct {
@@ -120,6 +135,70 @@ func (u *authUsecase) GetMe(userID uint) (*MeResponse, error) {
 		Permissions: permissions,
 		Credits:     credits,
 	}, nil
+}
+
+func (u *authUsecase) UpdateProfile(userID uint, req *UpdateProfileRequest) (*MeResponse, error) {
+	if strings.TrimSpace(req.Name) == "" {
+		return nil, errors.New("name is required")
+	}
+	if strings.TrimSpace(req.Email) == "" {
+		return nil, errors.New("email is required")
+	}
+
+	// Ensure the email isn't taken by another account.
+	exists, err := u.authRepo.EmailExistsForOtherUser(req.Email, userID)
+	if err != nil {
+		return nil, errors.New("failed to validate email")
+	}
+	if exists {
+		return nil, errors.New("email already in use")
+	}
+
+	fields := map[string]interface{}{
+		"name":  strings.TrimSpace(req.Name),
+		"email": strings.TrimSpace(req.Email),
+		"phone": req.Phone,
+	}
+	if err := u.authRepo.UpdateProfile(userID, fields); err != nil {
+		return nil, errors.New("failed to update profile")
+	}
+
+	return u.GetMe(userID)
+}
+
+func (u *authUsecase) ChangePassword(userID uint, req *ChangePasswordRequest) error {
+	if req.OldPassword == "" {
+		return errors.New("current password is required")
+	}
+	if len(req.NewPassword) < 6 {
+		return errors.New("new password must be at least 6 characters")
+	}
+
+	user, err := u.authRepo.FindByIDWithRole(userID)
+	if err != nil {
+		return errors.New("user not found")
+	}
+
+	if !jwtPkg.CheckPassword(user.Password, req.OldPassword) {
+		return errors.New("current password is incorrect")
+	}
+
+	hashed, err := jwtPkg.HashPassword(req.NewPassword)
+	if err != nil {
+		return errors.New("failed to hash password")
+	}
+
+	if err := u.authRepo.UpdateProfile(userID, map[string]interface{}{"password": hashed}); err != nil {
+		return errors.New("failed to update password")
+	}
+	return nil
+}
+
+func (u *authUsecase) UpdateAvatar(userID uint, path string) (*MeResponse, error) {
+	if err := u.authRepo.UpdateProfile(userID, map[string]interface{}{"avatar": path}); err != nil {
+		return nil, errors.New("failed to update avatar")
+	}
+	return u.GetMe(userID)
 }
 
 func (u *authUsecase) RefreshToken(userID uint) (*TokenResponse, error) {

@@ -6,6 +6,7 @@ import (
 	"jk-api/internal/module/auth/usecase"
 	logRepo "jk-api/internal/module/log/repository"
 	"jk-api/pkg/response"
+	"jk-api/pkg/upload"
 	"jk-api/pkg/useragent"
 
 	"github.com/gofiber/fiber/v2"
@@ -63,6 +64,53 @@ func (ctrl *AuthController) GetMe(c *fiber.Ctx) error {
 	}
 
 	return response.Success(c, "User info retrieved", result)
+}
+
+func (ctrl *AuthController) UpdateProfile(c *fiber.Ctx) error {
+	userID := middleware.GetUserID(c)
+
+	var req usecase.UpdateProfileRequest
+	if err := c.BodyParser(&req); err != nil {
+		return response.BadRequest(c, "Invalid request body")
+	}
+
+	result, err := ctrl.authUsecase.UpdateProfile(userID, &req)
+	if err != nil {
+		return response.BadRequest(c, err.Error())
+	}
+
+	return response.Success(c, "Profile updated", result)
+}
+
+func (ctrl *AuthController) ChangePassword(c *fiber.Ctx) error {
+	userID := middleware.GetUserID(c)
+
+	var req usecase.ChangePasswordRequest
+	if err := c.BodyParser(&req); err != nil {
+		return response.BadRequest(c, "Invalid request body")
+	}
+
+	if err := ctrl.authUsecase.ChangePassword(userID, &req); err != nil {
+		return response.BadRequest(c, err.Error())
+	}
+
+	return response.Success(c, "Password changed", nil)
+}
+
+func (ctrl *AuthController) UploadAvatar(c *fiber.Ctx) error {
+	userID := middleware.GetUserID(c)
+
+	path, err := upload.SaveFile(c, "avatar", "avatars")
+	if err != nil {
+		return response.BadRequest(c, err.Error())
+	}
+
+	result, err := ctrl.authUsecase.UpdateAvatar(userID, path)
+	if err != nil {
+		return response.BadRequest(c, err.Error())
+	}
+
+	return response.Success(c, "Avatar uploaded", result)
 }
 
 func (ctrl *AuthController) RefreshToken(c *fiber.Ctx) error {
