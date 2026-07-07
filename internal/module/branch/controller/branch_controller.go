@@ -5,6 +5,7 @@ import (
 
 	"jk-api/internal/module/branch/usecase"
 	"jk-api/pkg/response"
+	"jk-api/pkg/upload"
 
 	"github.com/gofiber/fiber/v2"
 )
@@ -83,6 +84,24 @@ func (ctrl *BranchController) UpdateBranch(c *fiber.Ctx) error {
 		return response.BadRequest(c, err.Error())
 	}
 	return response.Success(c, "Branch updated", branch)
+}
+
+func (ctrl *BranchController) UploadLogo(c *fiber.Ctx) error {
+	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
+	if err != nil {
+		return response.BadRequest(c, "Invalid branch ID")
+	}
+
+	path, err := upload.SaveFile(c, "logo", "branches")
+	if err != nil {
+		return response.BadRequest(c, err.Error())
+	}
+
+	branch, err := ctrl.branchUsecase.UpdateLogo(uint(id), path)
+	if err != nil {
+		return response.BadRequest(c, err.Error())
+	}
+	return response.Success(c, "Logo uploaded", branch)
 }
 
 func (ctrl *BranchController) DeleteBranch(c *fiber.Ctx) error {

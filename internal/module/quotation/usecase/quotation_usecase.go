@@ -70,8 +70,12 @@ type CreateQuotationRequest struct {
 	StoreWebsite string `json:"-"`
 	StoreLogo    string `json:"-"`
 	// PayloadStoreID lets a master assign the quotation to a chosen store (master
-	// has no store_id of their own). Ignored for owner/employee (set from JWT).
+	// has no store_id of their own). Ignored for employee (set from JWT).
 	PayloadStoreID  *uint  `json:"store_id"`
+	// PayloadBranchID picks which branch's receipt header to snapshot. Master and
+	// owner choose it (defaulting to the store's main branch); employees are
+	// locked to their JWT branch. The whole header is copied from this branch.
+	PayloadBranchID *uint  `json:"branch_id"`
 	MemberID        *uint  `json:"member_id"`
 	Note            string `json:"note"`
 	SignerName      string `json:"signer_name"`

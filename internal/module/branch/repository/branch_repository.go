@@ -15,6 +15,11 @@ type BranchRepository interface {
 	Update(branch *entity.Branch) error
 	Delete(id uint) error
 	GenerateCode() (string, error)
+	// SetMain makes branchID the store's sole main branch (unsets the others).
+	SetMain(storeID, branchID uint) error
+	// CountByStoreID counts a store's non-deleted branches (to auto-flag the first
+	// one created as main).
+	CountByStoreID(storeID uint) (int64, error)
 }
 
 type branchRepository struct {
@@ -37,8 +42,29 @@ func (r *branchRepository) FindAllByStoreID(storeID uint, page, limit int) ([]en
 	query.Count(&total)
 
 	offset := (page - 1) * limit
-	err := query.Offset(offset).Limit(limit).Order("id DESC").Find(&branches).Error
+	err := query.Offset(offset).Limit(limit).Order("is_main DESC, id DESC").Find(&branches).Error
 	return branches, total, err
+}
+
+// SetMain makes branchID the store's sole main branch. Runs in a transaction so
+// there's never a moment with two mains (or none) for the store.
+func (r *branchRepository) SetMain(storeID, branchID uint) error {
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&entity.Branch{}).
+			Where("store_id = ? AND id <> ?", storeID, branchID).
+			Update("is_main", false).Error; err != nil {
+			return err
+		}
+		return tx.Model(&entity.Branch{}).
+			Where("id = ?", branchID).
+			Update("is_main", true).Error
+	})
+}
+
+func (r *branchRepository) CountByStoreID(storeID uint) (int64, error) {
+	var count int64
+	err := r.db.Model(&entity.Branch{}).Where("store_id = ?", storeID).Count(&count).Error
+	return count, err
 }
 
 func (r *branchRepository) FindByID(id uint) (*entity.Branch, error) {

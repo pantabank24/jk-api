@@ -22,6 +22,7 @@ func SetupBranchRoutes(v1 fiber.Router, db *gorm.DB, cfg *config.Config) {
 		branches.Get("/:id", middleware.RequirePermission(db, "branches.read"), ctrl.GetBranchByID)
 		branches.Post("/", middleware.RequirePermission(db, "branches.create"), ctrl.CreateBranch)
 		branches.Put("/:id", middleware.RequirePermission(db, "branches.update"), ctrl.UpdateBranch)
+		branches.Post("/:id/logo", middleware.RequirePermission(db, "branches.update"), ctrl.UploadLogo)
 		branches.Delete("/:id", middleware.RequirePermission(db, "branches.delete"), ctrl.DeleteBranch)
 	}
 }

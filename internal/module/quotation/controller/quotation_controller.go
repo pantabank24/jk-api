@@ -74,12 +74,13 @@ func (ctrl *QuotationController) CreateQuotation(c *fiber.Ctx) error {
 	roleName := middleware.GetRoleName(c)
 	switch roleName {
 	case "owner":
-		// Owner must use their own store; branch is optional
+		// Owner is tied to their store; they pick which branch's header to use.
 		if storeID := middleware.GetStoreID(c); storeID != nil {
 			req.StoreID = storeID
 		}
+		req.BranchID = req.PayloadBranchID
 	case "employee":
-		// Employee must use their assigned store AND branch
+		// Employee is locked to their assigned store AND branch.
 		if storeID := middleware.GetStoreID(c); storeID != nil {
 			req.StoreID = storeID
 		}
@@ -87,29 +88,38 @@ func (ctrl *QuotationController) CreateQuotation(c *fiber.Ctx) error {
 			req.BranchID = branchID
 		}
 	default:
-		// master: not tied to a store — use the store chosen in the payload (for
-		// the receipt header / reporting); branch stays nil.
+		// master: not tied to a store — use the store + branch chosen in the payload.
 		req.StoreID = req.PayloadStoreID
+		req.BranchID = req.PayloadBranchID
 	}
 
-	// Snapshot the store/branch header now, so reprinting this quotation later
-	// (after the store's info changes) still shows the header as it was today.
-	if req.StoreID != nil {
-		var store entity.Store
-		if err := ctrl.db.First(&store, *req.StoreID).Error; err == nil {
-			req.StoreName = store.Name
-			req.StoreAddress = store.Address
-			req.StorePhone = store.Phone
-			req.StoreTaxID = store.TaxID
-			req.StoreTaxName = store.TaxName
-			req.StoreWebsite = store.Website
-			req.StoreLogo = store.Logo
+	// The receipt header now lives on the branch (each branch prints its own).
+	// Fall back to the store's main branch when none was chosen, then snapshot the
+	// header onto the quotation so reprints stay accurate even if the branch's
+	// info changes later.
+	if req.BranchID == nil && req.StoreID != nil {
+		var main entity.Branch
+		if err := ctrl.db.Where("store_id = ? AND is_main = ?", *req.StoreID, true).
+			First(&main).Error; err == nil {
+			req.BranchID = &main.ID
 		}
 	}
 	if req.BranchID != nil {
 		var branch entity.Branch
 		if err := ctrl.db.First(&branch, *req.BranchID).Error; err == nil {
+			req.StoreName = branch.HeaderName
 			req.StoreBranch = branch.Name
+			req.StoreAddress = branch.Address
+			req.StorePhone = branch.Phone
+			req.StoreTaxID = branch.TaxID
+			req.StoreTaxName = branch.TaxName
+			req.StoreWebsite = branch.Website
+			req.StoreLogo = branch.Logo
+			// Keep the store link consistent with the branch (master may have sent
+			// only a branch id).
+			if req.StoreID == nil {
+				req.StoreID = &branch.StoreID
+			}
 		}
 	}
 
