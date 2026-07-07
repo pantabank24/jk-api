@@ -54,6 +54,10 @@ type Quotation struct {
 	StoreTaxName string `json:"store_tax_name" gorm:"type:varchar(255);default:''"`
 	StoreWebsite string `json:"store_website" gorm:"type:varchar(255);default:''"`
 	StoreLogo    string `json:"store_logo"    gorm:"type:varchar(500);default:''"`
+	// NoHeader marks a document intentionally issued without a receipt header —
+	// readers must NOT fall back to the live store relation (that fallback is
+	// only for legacy quotations that predate the snapshot columns).
+	NoHeader     bool   `json:"no_header"     gorm:"default:false"`
 	Items       []QuotationItem  `json:"items,omitempty" gorm:"foreignKey:QuotationID"`
 	Images      []QuotationImage `json:"images,omitempty" gorm:"foreignKey:QuotationID"`
 	CreatedAt   time.Time       `json:"created_at"`

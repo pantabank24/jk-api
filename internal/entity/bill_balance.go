@@ -19,6 +19,9 @@ type BillBalance struct {
 	Weight      float64        `json:"weight"       gorm:"type:decimal(12,4);default:0"`
 	AvgPrice    float64        `json:"avg_price"    gorm:"type:decimal(14,4);default:0"`
 	Description string         `json:"description"  gorm:"type:text;default:''"`
-	CreatedAt   time.Time      `json:"created_at"`
+	// Set by เคลียร์บิล: a settled row is kept for history but no longer
+	// contributes to the customer's balance / average-price calculation.
+	SettledAt *time.Time `json:"settled_at"`
+	CreatedAt time.Time  `json:"created_at"`
 	DeletedAt   gorm.DeletedAt `json:"-" gorm:"index"`
 }

@@ -23,6 +23,7 @@ type CreateStoreRequest struct {
 	TaxID   string `json:"tax_id"`
 	TaxName string `json:"tax_name"`
 	Website string `json:"website"`
+	IsMain  bool   `json:"is_main"`
 }
 
 type UpdateStoreRequest struct {
@@ -32,6 +33,7 @@ type UpdateStoreRequest struct {
 	TaxID    *string `json:"tax_id"`
 	TaxName  *string `json:"tax_name"`
 	Website  *string `json:"website"`
+	IsMain   *bool   `json:"is_main"`
 	IsActive *bool   `json:"is_active"`
 }
 
@@ -49,6 +51,14 @@ func (u *storeUsecase) CreateStore(req *CreateStoreRequest) (*entity.Store, erro
 		return nil, err
 	}
 
+	// The first store is always the main one (there must be exactly one);
+	// later stores are main only when explicitly requested.
+	existing, err := u.storeRepo.Count()
+	if err != nil {
+		return nil, err
+	}
+	isMain := req.IsMain || existing == 0
+
 	store := &entity.Store{
 		Code:     code,
 		Name:     req.Name,
@@ -57,11 +67,19 @@ func (u *storeUsecase) CreateStore(req *CreateStoreRequest) (*entity.Store, erro
 		TaxID:    req.TaxID,
 		TaxName:  req.TaxName,
 		Website:  req.Website,
+		IsMain:   false,
 		IsActive: true,
 	}
 
 	if err := u.storeRepo.Create(store); err != nil {
 		return nil, err
+	}
+	// Enforce a single main store when this one claims it.
+	if isMain {
+		if err := u.storeRepo.SetMain(store.ID); err != nil {
+			return nil, err
+		}
+		store.IsMain = true
 	}
 	return store, nil
 }
@@ -107,9 +125,19 @@ func (u *storeUsecase) UpdateStore(id uint, req *UpdateStoreRequest) (*entity.St
 	if req.IsActive != nil {
 		store.IsActive = *req.IsActive
 	}
+	// Setting this store as main is handled separately so exactly one store
+	// stays main. Unsetting is ignored — pick another store as main instead
+	// of leaving the system with none.
+	makeMain := req.IsMain != nil && *req.IsMain && !store.IsMain
 
 	if err := u.storeRepo.Update(store); err != nil {
 		return nil, err
+	}
+	if makeMain {
+		if err := u.storeRepo.SetMain(store.ID); err != nil {
+			return nil, err
+		}
+		store.IsMain = true
 	}
 	return store, nil
 }

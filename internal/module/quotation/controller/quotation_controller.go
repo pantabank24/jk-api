@@ -96,29 +96,32 @@ func (ctrl *QuotationController) CreateQuotation(c *fiber.Ctx) error {
 	// The receipt header now lives on the branch (each branch prints its own).
 	// Fall back to the store's main branch when none was chosen, then snapshot the
 	// header onto the quotation so reprints stay accurate even if the branch's
-	// info changes later.
-	if req.BranchID == nil && req.StoreID != nil {
-		var main entity.Branch
-		if err := ctrl.db.Where("store_id = ? AND is_main = ?", *req.StoreID, true).
-			First(&main).Error; err == nil {
-			req.BranchID = &main.ID
+	// info changes later. Skipped entirely when the caller opted out (no_header) —
+	// the document prints headerless; the store/branch links above still stand.
+	if !req.NoHeader {
+		if req.BranchID == nil && req.StoreID != nil {
+			var main entity.Branch
+			if err := ctrl.db.Where("store_id = ? AND is_main = ?", *req.StoreID, true).
+				First(&main).Error; err == nil {
+				req.BranchID = &main.ID
+			}
 		}
-	}
-	if req.BranchID != nil {
-		var branch entity.Branch
-		if err := ctrl.db.First(&branch, *req.BranchID).Error; err == nil {
-			req.StoreName = branch.HeaderName
-			req.StoreBranch = branch.Name
-			req.StoreAddress = branch.Address
-			req.StorePhone = branch.Phone
-			req.StoreTaxID = branch.TaxID
-			req.StoreTaxName = branch.TaxName
-			req.StoreWebsite = branch.Website
-			req.StoreLogo = branch.Logo
-			// Keep the store link consistent with the branch (master may have sent
-			// only a branch id).
-			if req.StoreID == nil {
-				req.StoreID = &branch.StoreID
+		if req.BranchID != nil {
+			var branch entity.Branch
+			if err := ctrl.db.First(&branch, *req.BranchID).Error; err == nil {
+				req.StoreName = branch.HeaderName
+				req.StoreBranch = branch.Name
+				req.StoreAddress = branch.Address
+				req.StorePhone = branch.Phone
+				req.StoreTaxID = branch.TaxID
+				req.StoreTaxName = branch.TaxName
+				req.StoreWebsite = branch.Website
+				req.StoreLogo = branch.Logo
+				// Keep the store link consistent with the branch (master may have sent
+				// only a branch id).
+				if req.StoreID == nil {
+					req.StoreID = &branch.StoreID
+				}
 			}
 		}
 	}

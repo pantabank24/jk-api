@@ -15,6 +15,9 @@ type StoreRepository interface {
 	Update(store *entity.Store) error
 	Delete(id uint) error
 	GenerateCode() (string, error)
+	// SetMain makes storeID the system's sole main store (unsets the others).
+	SetMain(storeID uint) error
+	Count() (int64, error)
 }
 
 type storeRepository struct {
@@ -35,7 +38,7 @@ func (r *storeRepository) FindAll(page, limit int) ([]entity.Store, int64, error
 
 	r.db.Model(&entity.Store{}).Count(&total)
 	offset := (page - 1) * limit
-	err := r.db.Preload("Branches").Offset(offset).Limit(limit).Order("id DESC").Find(&stores).Error
+	err := r.db.Preload("Branches").Offset(offset).Limit(limit).Order("is_main DESC, id DESC").Find(&stores).Error
 	return stores, total, err
 }
 
@@ -61,6 +64,27 @@ func (r *storeRepository) Delete(id uint) error {
 		}
 		return tx.Delete(&entity.Store{}, id).Error
 	})
+}
+
+// SetMain makes storeID the system's sole main store. Runs in a transaction so
+// there's never a moment with two mains (or none).
+func (r *storeRepository) SetMain(storeID uint) error {
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&entity.Store{}).
+			Where("id <> ?", storeID).
+			Update("is_main", false).Error; err != nil {
+			return err
+		}
+		return tx.Model(&entity.Store{}).
+			Where("id = ?", storeID).
+			Update("is_main", true).Error
+	})
+}
+
+func (r *storeRepository) Count() (int64, error) {
+	var count int64
+	err := r.db.Model(&entity.Store{}).Count(&count).Error
+	return count, err
 }
 
 func (r *storeRepository) GenerateCode() (string, error) {

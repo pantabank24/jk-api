@@ -40,12 +40,14 @@ func (r *billBalanceRepository) Record(userID uint, storeID *uint, quotationID *
 	}).Error
 }
 
-// GetBalance walks all records in chronological order and accumulates weight/avgPrice
-// only within the current unsettled cycle. When the running balance reaches zero
-// (settled), the weight/price accumulators reset so past cycles have no effect.
+// GetBalance walks all live records in chronological order and accumulates
+// weight/avgPrice only within the current unsettled cycle. When the running
+// balance reaches zero (settled), the weight/price accumulators reset so past
+// cycles have no effect. Rows settled by เคลียร์บิล (settled_at) are excluded
+// entirely — they remain only as history.
 func (r *billBalanceRepository) GetBalance(userID uint) (BalanceSummary, error) {
 	var records []entity.BillBalance
-	err := r.db.Where("user_id = ?", userID).
+	err := r.db.Where("user_id = ? AND settled_at IS NULL", userID).
 		Order("created_at ASC").
 		Find(&records).Error
 	if err != nil {

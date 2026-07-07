@@ -76,6 +76,9 @@ type CreateQuotationRequest struct {
 	// owner choose it (defaulting to the store's main branch); employees are
 	// locked to their JWT branch. The whole header is copied from this branch.
 	PayloadBranchID *uint  `json:"branch_id"`
+	// NoHeader opts out of the receipt-header snapshot — the quotation prints
+	// without a header. Store/branch linkage (lists, reporting) is unaffected.
+	NoHeader        bool   `json:"no_header"`
 	MemberID        *uint  `json:"member_id"`
 	Note            string `json:"note"`
 	SignerName      string `json:"signer_name"`
@@ -217,6 +220,7 @@ func (u *quotationUsecase) CreateQuotation(req *CreateQuotationRequest) (*entity
 		StoreTaxName: req.StoreTaxName,
 		StoreWebsite: req.StoreWebsite,
 		StoreLogo:    req.StoreLogo,
+		NoHeader:     req.NoHeader,
 		Items:       items,
 	}
 

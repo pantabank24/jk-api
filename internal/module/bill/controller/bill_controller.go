@@ -266,9 +266,22 @@ func (ctrl *BillController) maybeSendLineNotify(storeID *uint) {
 	}
 }
 
+// ClearBillsRequest optionally narrows the clear to specific bills; an empty
+// (or absent) list keeps the old behaviour of clearing every completed bill.
+type ClearBillsRequest struct {
+	BillIDs []uint `json:"bill_ids"`
+}
+
 func (ctrl *BillController) ClearBills(c *fiber.Ctx) error {
 	storeID, _, _ := ctrl.scope(c)
-	count, err := ctrl.billUsecase.ClearBills(storeID)
+	var req ClearBillsRequest
+	// BodyParser errors on an empty body — old clients POST with no payload.
+	if len(c.Body()) > 0 {
+		if err := c.BodyParser(&req); err != nil {
+			return response.BadRequest(c, "Invalid request body")
+		}
+	}
+	count, err := ctrl.billUsecase.ClearBills(storeID, req.BillIDs)
 	if err != nil {
 		return response.InternalServerError(c, err.Error())
 	}

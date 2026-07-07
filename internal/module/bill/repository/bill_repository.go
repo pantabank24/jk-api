@@ -3,6 +3,7 @@ package repository
 import (
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"jk-api/internal/entity"
 
@@ -40,8 +41,11 @@ type BillRepository interface {
 	LogDelivery(billID uint, weight, amount float64, note string, items json.RawMessage) error
 	// GetDeliveryLogs returns all delivery-session records for a bill, oldest first.
 	GetDeliveryLogs(billID uint) ([]entity.BillDeliveryLog, error)
-	// ClearBills bulk-moves all สำเร็จ (12) bills to เคลียร์บิลแล้ว (14) for a store.
-	ClearBills(storeID *uint) (int64, error)
+	// ClearBills moves สำเร็จ (12) bills to เคลียร์บิลแล้ว (14) and settles their
+	// debt/credit ledger rows so the customer's balance/average restart fresh.
+	// billIDs empty = all completed bills in scope; a non-empty selection is
+	// expanded to whole issue-groups (bills sharing issued_quotation_id).
+	ClearBills(storeID *uint, billIDs []uint) (int64, error)
 }
 
 type billRepository struct {
@@ -368,11 +372,60 @@ const (
 	StatusCleared       = 14 // เคลียร์บิลแล้ว
 )
 
-func (r *billRepository) ClearBills(storeID *uint) (int64, error) {
-	query := r.db.Model(&entity.Quotation{}).Where("is_bill = ? AND status = ?", true, StatusCompleted)
-	if storeID != nil {
-		query = query.Where("store_id = ?", *storeID)
-	}
-	result := query.Update("status", StatusCleared)
-	return result.RowsAffected, result.Error
+func (r *billRepository) ClearBills(storeID *uint, billIDs []uint) (int64, error) {
+	var cleared int64
+	err := r.db.Transaction(func(tx *gorm.DB) error {
+		// Resolve the target bills (status 12, in scope). A partial selection is
+		// expanded to whole issue-groups: bills issued together share one ledger
+		// row, so they must settle together.
+		q := tx.Model(&entity.Quotation{}).Where("is_bill = ? AND status = ?", true, StatusCompleted)
+		if storeID != nil {
+			q = q.Where("store_id = ?", *storeID)
+		}
+		if len(billIDs) > 0 {
+			var qids []uint
+			if err := tx.Model(&entity.Quotation{}).
+				Where("is_bill = ? AND id IN ? AND issued_quotation_id IS NOT NULL", true, billIDs).
+				Distinct().Pluck("issued_quotation_id", &qids).Error; err != nil {
+				return err
+			}
+			if len(qids) > 0 {
+				q = q.Where("id IN ? OR issued_quotation_id IN ?", billIDs, qids)
+			} else {
+				q = q.Where("id IN ?", billIDs)
+			}
+		}
+		var targets []entity.Quotation
+		if err := q.Select("id", "issued_quotation_id").Find(&targets).Error; err != nil {
+			return err
+		}
+		if len(targets) == 0 {
+			return nil
+		}
+
+		ids := make([]uint, 0, len(targets))
+		// Ledger rows are keyed by the issued quotation's id; include the bill id
+		// too, defensively, mirroring Delete's cleanup.
+		ledgerIDs := make([]uint, 0, len(targets)*2)
+		for _, b := range targets {
+			ids = append(ids, b.ID)
+			ledgerIDs = append(ledgerIDs, b.ID)
+			if b.IssuedQuotationID != nil {
+				ledgerIDs = append(ledgerIDs, *b.IssuedQuotationID)
+			}
+		}
+
+		res := tx.Model(&entity.Quotation{}).Where("id IN ?", ids).Update("status", StatusCleared)
+		if res.Error != nil {
+			return res.Error
+		}
+		cleared = res.RowsAffected
+
+		// Settle the cleared bills' debt/credit ledger rows: kept for history but
+		// excluded from the balance/average from now on (see GetBalance).
+		return tx.Model(&entity.BillBalance{}).
+			Where("quotation_id IN ? AND settled_at IS NULL", ledgerIDs).
+			Update("settled_at", time.Now()).Error
+	})
+	return cleared, err
 }

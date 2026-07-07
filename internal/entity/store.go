@@ -16,6 +16,9 @@ type Store struct {
 	TaxName   string         `json:"tax_name" gorm:"type:varchar(255);default:''"`
 	Website   string         `json:"website" gorm:"type:varchar(255);default:''"`
 	Logo      string         `json:"logo" gorm:"type:varchar(500);default:''"`
+	// IsMain marks the system's default store (exactly one), used when no store
+	// is explicitly chosen — e.g. the master's receipt-header picker.
+	IsMain    bool           `json:"is_main" gorm:"default:false;index"`
 	IsActive  bool           `json:"is_active" gorm:"default:true"`
 	Branches  []Branch       `json:"branches,omitempty" gorm:"foreignKey:StoreID"`
 	Users     []User         `json:"users,omitempty" gorm:"foreignKey:StoreID"`

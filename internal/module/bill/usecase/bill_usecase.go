@@ -29,7 +29,7 @@ type BillUsecase interface {
 	PartialDeliverBill(id uint, req *PartialDeliverRequest) (*entity.Quotation, error)
 	GetBillBalance(userID uint) (repository.BalanceSummary, []entity.BillBalance, error)
 	GetDeliveryLogs(billID uint) ([]entity.BillDeliveryLog, error)
-	ClearBills(storeID *uint) (int64, error)
+	ClearBills(storeID *uint, billIDs []uint) (int64, error)
 }
 
 type CreateBillRequest struct {
@@ -416,8 +416,8 @@ func (u *billUsecase) GetBillBalance(userID uint) (repository.BalanceSummary, []
 	return summary, history, nil
 }
 
-func (u *billUsecase) ClearBills(storeID *uint) (int64, error) {
-	return u.billRepo.ClearBills(storeID)
+func (u *billUsecase) ClearBills(storeID *uint, billIDs []uint) (int64, error) {
+	return u.billRepo.ClearBills(storeID, billIDs)
 }
 
 func (u *billUsecase) notify(bill *entity.Quotation, typ, title, body string) {
