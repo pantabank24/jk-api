@@ -11,6 +11,7 @@ type QuotationItem struct {
 	QuotationID uint           `json:"quotation_id" gorm:"not null;index"`
 	TypeID      string         `json:"type_id" gorm:"type:varchar(50);default:''"`
 	TypeName    string         `json:"type_name" gorm:"type:varchar(100);not null"`
+	Metal       string         `json:"metal" gorm:"type:varchar(20);default:'gold'"`
 	Plus        float64        `json:"plus" gorm:"type:decimal(12,2);default:0"`
 	Price       float64        `json:"price" gorm:"type:decimal(12,2);default:0"`
 	Percent     float64        `json:"percent" gorm:"type:decimal(8,4);default:0"`

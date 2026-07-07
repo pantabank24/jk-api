@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"jk-api/internal/entity"
 	"jk-api/internal/module/bill/repository"
@@ -47,12 +48,24 @@ type CreateBillRequest struct {
 type CreateBillItemRequest struct {
 	TypeID   string  `json:"type_id"`
 	TypeName string  `json:"type_name"`
+	// Metal tags the item (gold|silver|platinum|palladium); empty = gold.
+	// Customer bills are gold-only today, but the column keeps items consistent
+	// with quotation items.
+	Metal    string  `json:"metal"`
 	Plus     float64 `json:"plus"`
 	Price    float64 `json:"price"`
 	Percent  float64 `json:"percent"`
 	Weight   float64 `json:"weight"`
 	PerGram  float64 `json:"per_gram"`
 	Total    float64 `json:"total"`
+}
+
+// billItemMetal normalises an item's metal, treating empty as gold (legacy payloads).
+func billItemMetal(m string) string {
+	if m == "" {
+		return "gold"
+	}
+	return m
 }
 
 type UpdateBillStatusRequest struct {
@@ -97,6 +110,7 @@ func (u *billUsecase) CreateBill(req *CreateBillRequest) (*entity.Quotation, err
 		items = append(items, entity.QuotationItem{
 			TypeID:   item.TypeID,
 			TypeName: item.TypeName,
+			Metal:    billItemMetal(item.Metal),
 			Plus:     item.Plus,
 			Price:    item.Price,
 			Percent:  item.Percent,
@@ -278,6 +292,7 @@ func (u *billUsecase) UpdateBill(id uint, req *UpdateBillRequest) (*entity.Quota
 				QuotationID: bill.ID,
 				TypeID:      item.TypeID,
 				TypeName:    item.TypeName,
+				Metal:       billItemMetal(item.Metal),
 				Plus:        item.Plus,
 				Price:       item.Price,
 				Percent:     item.Percent,
@@ -345,7 +360,15 @@ func (u *billUsecase) CountUnfinished(storeID *uint, branchID *uint, createdBy *
 }
 
 func (u *billUsecase) PartialDeliverBill(id uint, req *PartialDeliverRequest) (*entity.Quotation, error) {
-	if req.Weight <= 0 || req.Amount <= 0 {
+	if req.Weight < 0 || req.Amount < 0 {
+		return nil, errors.New("weight and amount must not be negative")
+	}
+	// Weight/amount carry the GOLD portion only (the bill's processed aggregates
+	// are gold). A round of non-gold metals arrives with both at zero — that's
+	// valid as long as it still has items to log; reject only truly empty calls.
+	itemsJSON := strings.TrimSpace(string(req.Items))
+	hasItems := itemsJSON != "" && itemsJSON != "[]" && itemsJSON != "null"
+	if req.Weight == 0 && req.Amount == 0 && !hasItems {
 		return nil, errors.New("weight and amount must be greater than zero")
 	}
 	bill, err := u.billRepo.FindByID(id)
@@ -362,6 +385,12 @@ func (u *billUsecase) PartialDeliverBill(id uint, req *PartialDeliverRequest) (*
 	}
 	if bill.Status != repository.StatusPendingIssue {
 		return nil, errors.New("บันทึกส่งบางส่วนได้เฉพาะบิลที่สถานะ 'รอออกบิล' เท่านั้น")
+	}
+	// Non-gold-only round: nothing to add to the (gold) processed aggregates —
+	// just log the items so they survive a reload and reach the final quotation.
+	if req.Weight == 0 && req.Amount == 0 {
+		_ = u.billRepo.LogDelivery(id, 0, 0, "รอส่งเพิ่ม", req.Items)
+		return bill, nil
 	}
 	result, err := u.billRepo.PartialDeliver(id, req.Weight, req.Amount)
 	if err != nil {

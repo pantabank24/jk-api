@@ -88,12 +88,23 @@ type CreateQuotationRequest struct {
 type CreateQuotationItemRequest struct {
 	TypeID   string  `json:"type_id"`
 	TypeName string  `json:"type_name"`
+	// Metal tags the item (gold|silver|platinum|palladium). Empty defaults to
+	// gold — only gold items participate in the bill debt/credit balance.
+	Metal    string  `json:"metal"`
 	Plus     float64 `json:"plus"`
 	Price    float64 `json:"price"`
 	Percent  float64 `json:"percent"`
 	Weight   float64 `json:"weight"`
 	PerGram  float64 `json:"per_gram"`
 	Total    float64 `json:"total"`
+}
+
+// itemMetal normalises an item's metal, treating empty as gold (legacy payloads).
+func itemMetal(m string) string {
+	if m == "" {
+		return "gold"
+	}
+	return m
 }
 
 type UpdateStatusRequest struct {
@@ -168,6 +179,7 @@ func (u *quotationUsecase) CreateQuotation(req *CreateQuotationRequest) (*entity
 		items = append(items, entity.QuotationItem{
 			TypeID:   item.TypeID,
 			TypeName: item.TypeName,
+			Metal:    itemMetal(item.Metal),
 			Plus:     item.Plus,
 			Price:    item.Price,
 			Percent:  item.Percent,
@@ -252,6 +264,14 @@ func (u *quotationUsecase) CreateQuotation(req *CreateQuotationRequest) (*entity
 		// Compute balance diff: quotation total vs. sum of customer's remaining (locked) amounts.
 		// remaining = total_amount - processed_amount for each bill.
 		// positive balance = credit (customer gets more); negative = debt (customer owes).
+		// Only GOLD items enter the balance: bills are gold-only, and other metals
+		// (silver/platinum/palladium) are paid in full on the quotation — no carry-over.
+		var goldTotal float64
+		for _, item := range req.Items {
+			if itemMetal(item.Metal) == "gold" {
+				goldTotal += item.Total
+			}
+		}
 		if bills, err := u.quotationRepo.FindBillsByIDs(billIDs); err == nil {
 			var lockedTotal float64
 			var billUserID *uint
@@ -263,7 +283,7 @@ func (u *quotationUsecase) CreateQuotation(req *CreateQuotationRequest) (*entity
 					billUserID = bills[i].CreatedBy
 				}
 			}
-			balanceDiff := totalAmount - lockedTotal
+			balanceDiff := goldTotal - lockedTotal
 			if billUserID != nil && u.billBalanceRepo != nil {
 				qID := quotation.ID
 				// Use customer's bill items (not master's quotation items) so that
@@ -279,7 +299,7 @@ func (u *quotationUsecase) CreateQuotation(req *CreateQuotationRequest) (*entity
 				if lockedWeight > 0 {
 					lockedAvgPrice = lockedTotal / lockedWeight
 				}
-				desc := fmt.Sprintf("บิล %s — quotation %.2f บาท, locked %.2f บาท", quotation.Code, totalAmount, lockedTotal)
+				desc := fmt.Sprintf("บิล %s — quotation (ทอง) %.2f บาท, locked %.2f บาท", quotation.Code, goldTotal, lockedTotal)
 				_ = u.billBalanceRepo.Record(*billUserID, quotation.StoreID, &qID, balanceDiff, lockedWeight, lockedAvgPrice, desc)
 			}
 		}
@@ -445,6 +465,7 @@ func (u *quotationUsecase) UpdateQuotation(id uint, req *UpdateQuotationRequest,
 				QuotationID: quotation.ID,
 				TypeID:      item.TypeID,
 				TypeName:    item.TypeName,
+				Metal:       itemMetal(item.Metal),
 				Plus:        item.Plus,
 				Price:       item.Price,
 				Percent:     item.Percent,
