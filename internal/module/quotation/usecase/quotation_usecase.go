@@ -89,6 +89,11 @@ type CreateQuotationRequest struct {
 	// all of a customer's pending bills into one quotation.
 	BillID          *uint  `json:"bill_id"`
 	BillIDs         []uint `json:"bill_ids"`
+	// BillItemIDs are the customer bill items the master TICKED for this round.
+	// Bills fully covered advance whole; partially covered bills are split so the
+	// unticked items stay "รอออกบิล" for a later round. Empty = cover everything
+	// (legacy whole-bill behaviour).
+	BillItemIDs     []uint `json:"bill_item_ids"`
 	Items           []CreateQuotationItemRequest `json:"items"`
 }
 
@@ -269,64 +274,48 @@ func (u *quotationUsecase) CreateQuotation(req *CreateQuotationRequest) (*entity
 		billIDs = []uint{*req.BillID}
 	}
 	if len(billIDs) > 0 {
-		// Compute balance diff: quotation total vs. sum of customer's remaining (locked) amounts.
-		// remaining = total_amount - processed_amount for each bill.
-		// positive balance = credit (customer gets more); negative = debt (customer owes).
-		// Only GOLD items enter the balance: bills are gold-only, and other metals
-		// (silver/platinum/palladium) are paid in full on the quotation — no carry-over.
-		var goldTotal float64
-		for _, item := range req.Items {
-			if itemMetal(item.Metal) == "gold" {
-				goldTotal += item.Total
-			}
-		}
-		if bills, err := u.quotationRepo.FindBillsByIDs(billIDs); err == nil {
-			var lockedTotal float64
-			var billUserID *uint
-			for i := range bills {
-				// Use the full bill total (not minus processed) because the issued
-				// quotation already includes all partial deliveries combined.
-				lockedTotal += bills[i].TotalAmount
-				if billUserID == nil {
-					billUserID = bills[i].CreatedBy
-				}
-			}
-			balanceDiff := goldTotal - lockedTotal
-			if billUserID != nil && u.billBalanceRepo != nil {
-				qID := quotation.ID
-				// Use customer's bill items (not master's quotation items) so that
-				// weight and avg_price are in the same units as refWeight/refAvgPrice
-				// on the frontend (both derived from customer's bill items).
-				var lockedWeight float64
-				for _, bill := range bills {
-					for _, item := range bill.Items {
-						lockedWeight += item.Weight
-					}
-				}
-				var lockedAvgPrice float64
-				if lockedWeight > 0 {
-					lockedAvgPrice = lockedTotal / lockedWeight
-				}
-				desc := fmt.Sprintf("บิล %s — quotation (ทอง) %.2f บาท, locked %.2f บาท", quotation.Code, goldTotal, lockedTotal)
-				_ = u.billBalanceRepo.Record(*billUserID, quotation.StoreID, &qID, balanceDiff, lockedWeight, lockedAvgPrice, desc)
-			}
+		// Per-item issuance: only the ticked bill items (req.BillItemIDs) are
+		// covered by this quotation. Bills fully covered advance whole (exactly
+		// the legacy behaviour); partially covered bills are SPLIT so the unticked
+		// items stay "รอออกบิล" for a later round. Each round settles itself — no
+		// debt/credit ledger is recorded any more (bill_balances is legacy data).
+		ticked := make(map[uint]bool, len(req.BillItemIDs))
+		for _, id := range req.BillItemIDs {
+			ticked[id] = true
 		}
 
 		var notifiedUser *uint
-		for _, bid := range billIDs {
-			_ = u.quotationRepo.MarkBillIssued(bid, quotation.ID)
-			if notifiedUser == nil {
-				if bill, err := u.quotationRepo.FindByID(bid); err == nil && bill != nil && bill.CreatedBy != nil {
+		issuedBills := 0
+		if bills, err := u.quotationRepo.FindBillsByIDs(billIDs); err == nil {
+			for i := range bills {
+				bill := &bills[i]
+				if notifiedUser == nil {
 					notifiedUser = bill.CreatedBy
 				}
+				// Empty BillItemIDs = legacy payload → cover every item.
+				var selected []uint
+				for _, item := range bill.Items {
+					if len(ticked) == 0 || ticked[item.ID] {
+						selected = append(selected, item.ID)
+					}
+				}
+				if len(selected) == 0 {
+					continue // none of this bill's items are in this round
+				}
+				if len(selected) == len(bill.Items) {
+					_ = u.quotationRepo.MarkBillIssued(bill.ID, quotation.ID)
+				} else if newBillID, err := u.quotationRepo.SplitBillItems(bill.ID, selected); err == nil {
+					_ = u.quotationRepo.MarkBillIssued(newBillID, quotation.ID)
+				}
+				issuedBills++
 			}
 		}
-		if notifiedUser != nil {
+		if notifiedUser != nil && issuedBills > 0 {
 			_ = u.notifRepo.Create(&entity.Notification{
 				UserID: *notifiedUser,
 				Type:   "bill_issued",
 				Title:  "บิลของคุณถูกออกแล้ว",
-				Body:   fmt.Sprintf("ออกบิลแล้ว %d รายการ สามารถดูรายละเอียดได้", len(billIDs)),
+				Body:   fmt.Sprintf("ออกบิลแล้ว %d รายการ สามารถดูรายละเอียดได้", issuedBills),
 			})
 		}
 	}

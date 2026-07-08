@@ -21,8 +21,11 @@ type QuotationRepository interface {
 	// MarkBillIssued advances a customer bill (a quotation row with is_bill=true)
 	// to "รอตรวจบิล" (status 11) and links it to the master-issued quotation.
 	MarkBillIssued(billID, quotationID uint) error
-	// FindBillsByIDs fetches bill rows by their IDs (used to compute balance diff when issuing).
+	// FindBillsByIDs fetches bill rows by their IDs (used at issuance).
 	FindBillsByIDs(ids []uint) ([]entity.Quotation, error)
+	// SplitBillItems moves the given items of a pending bill into a brand-new bill
+	// and recomputes both totals. Used when a quotation covers only part of a bill.
+	SplitBillItems(billID uint, itemIDs []uint) (uint, error)
 	// FindUnrefundedApprovedByCreator returns this creator's approved quotations
 	// whose charged credit hasn't been refunded yet (used by the credit-reset action).
 	FindUnrefundedApprovedByCreator(userID uint) ([]entity.Quotation, error)
@@ -139,6 +142,68 @@ func (r *quotationRepository) FindBillsByIDs(ids []uint) ([]entity.Quotation, er
 	var bills []entity.Quotation
 	err := r.db.Preload("Items").Where("id IN ? AND is_bill = ?", ids, true).Find(&bills).Error
 	return bills, err
+}
+
+// SplitBillItems moves the given items of a pending bill into a brand-new bill
+// (same customer/store header, fresh BILL code) and recomputes both bills'
+// totals from their remaining items. The caller then marks the NEW bill issued,
+// while the original keeps the leftover items and stays "รอออกบิล".
+func (r *quotationRepository) SplitBillItems(billID uint, itemIDs []uint) (uint, error) {
+	if len(itemIDs) == 0 {
+		return 0, fmt.Errorf("no items to split")
+	}
+	var newID uint
+	err := r.db.Transaction(func(tx *gorm.DB) error {
+		var bill entity.Quotation
+		if err := tx.Where("id = ? AND is_bill = ?", billID, true).First(&bill).Error; err != nil {
+			return err
+		}
+		// New bill code follows the bill module's BILL%04d scheme.
+		var count int64
+		tx.Unscoped().Model(&entity.Quotation{}).Where("is_bill = ?", true).Count(&count)
+
+		newBill := entity.Quotation{
+			StoreID:     bill.StoreID,
+			BranchID:    bill.BranchID,
+			MemberID:    bill.MemberID,
+			CreatedBy:   bill.CreatedBy,
+			Code:        fmt.Sprintf("BILL%04d", count+1),
+			Status:      10, // รอออกบิล — caller marks it issued right after
+			IsBill:      true,
+			GoldRound:   bill.GoldRound,
+			GoldPriceID: bill.GoldPriceID,
+		}
+		if err := tx.Create(&newBill).Error; err != nil {
+			return err
+		}
+		// Move the selected items across (guard on quotation_id so foreign item
+		// ids can't be detached from another bill).
+		if err := tx.Model(&entity.QuotationItem{}).
+			Where("quotation_id = ? AND id IN ?", billID, itemIDs).
+			Update("quotation_id", newBill.ID).Error; err != nil {
+			return err
+		}
+		// Recompute both totals from the items each bill now holds.
+		recompute := func(id uint) error {
+			var total float64
+			if err := tx.Model(&entity.QuotationItem{}).
+				Where("quotation_id = ?", id).
+				Select("COALESCE(SUM(total), 0)").Scan(&total).Error; err != nil {
+				return err
+			}
+			return tx.Model(&entity.Quotation{}).Where("id = ?", id).
+				Update("total_amount", total).Error
+		}
+		if err := recompute(billID); err != nil {
+			return err
+		}
+		if err := recompute(newBill.ID); err != nil {
+			return err
+		}
+		newID = newBill.ID
+		return nil
+	})
+	return newID, err
 }
 
 func (r *quotationRepository) FindUnrefundedApprovedByCreator(userID uint) ([]entity.Quotation, error) {
