@@ -23,9 +23,10 @@ func SetupBillRoutes(v1 fiber.Router, db *gorm.DB, cfg *config.Config) {
 	{
 		bills.Get("/unfinished-count", middleware.RequirePermission(db, "bills.read"), ctrl.GetUnfinishedCount)
 		bills.Get("/balance",          middleware.RequirePermission(db, "bills.read"), ctrl.GetBillBalance)
+		bills.Get("/sell-customers",   middleware.RequirePermission(db, "bills.sell"), ctrl.ListSellCustomers)
 		bills.Get("/",        middleware.RequirePermission(db, "bills.read"),    ctrl.GetAllBills)
 		bills.Get("/:id",     middleware.RequirePermission(db, "bills.read"),    ctrl.GetBillByID)
-		bills.Post("/",       middleware.RequirePermission(db, "bills.create"),  ctrl.CreateBill)
+		bills.Post("/",       middleware.RequireAnyPermission(db, "bills.create", "bills.sell"), ctrl.CreateBill)
 		bills.Patch("/:id",   middleware.RequirePermission(db, "bills.create"),  ctrl.UpdateBill)
 		bills.Post("/:id/issue",           middleware.RequirePermission(db, "bills.issue"),   ctrl.IssueBill)
 		bills.Post("/:id/approve",         middleware.RequirePermission(db, "bills.approve"), ctrl.ApproveBill)

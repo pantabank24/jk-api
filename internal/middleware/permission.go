@@ -63,6 +63,34 @@ func RequirePermission(db *gorm.DB, permissionCode string) fiber.Handler {
 	}
 }
 
+// RequireAnyPermission passes when the current user's role has AT LEAST ONE of
+// the given permission codes. Master always passes. Used by routes that serve
+// more than one role (e.g. bill creation: customers hold bills.create, staff
+// hold bills.sell).
+func RequireAnyPermission(db *gorm.DB, permissionCodes ...string) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		if GetRoleName(c) == "master" {
+			return c.Next()
+		}
+
+		roleID, ok := c.Locals("role_id").(uint)
+		if !ok || roleID == 0 {
+			return response.Forbidden(c, "No role assigned")
+		}
+
+		var count int64
+		db.Model(&entity.RolePermission{}).
+			Joins("JOIN permissions ON permissions.id = role_permissions.permission_id").
+			Where("role_permissions.role_id = ? AND permissions.code IN ?", roleID, permissionCodes).
+			Count(&count)
+
+		if count == 0 {
+			return response.Forbidden(c, "Insufficient permissions")
+		}
+		return c.Next()
+	}
+}
+
 // ScopeByStore ensures non-master users can only access their own store's data
 // It sets "scope_store_id" in locals for use by handlers
 func ScopeByStore() fiber.Handler {

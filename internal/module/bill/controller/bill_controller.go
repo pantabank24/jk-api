@@ -1,10 +1,12 @@
 package controller
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"jk-api/internal/entity"
@@ -89,19 +91,42 @@ func (ctrl *BillController) CreateBill(c *fiber.Ctx) error {
 		return response.BadRequest(c, "ต้องมีรายการอย่างน้อย 1 รายการ")
 	}
 
-	// Block creation when bills_open config is false.
-	var billsOpenCfg entity.SystemConfig
-	if err := ctrl.db.Where("key = ?", "bills_open").First(&billsOpenCfg).Error; err == nil {
-		if billsOpenCfg.Value == "false" {
-			return response.BadRequest(c, "ขณะนี้ปิดรับซื้อ ไม่สามารถสร้างบิลได้")
+	// Two flows share this endpoint:
+	//   - customer self-service: gated by the customer-facing switches (bills_open
+	//     + store hours); the bill is created for the caller.
+	//   - staff on-behalf (master/owner/employee with bills.sell): pick a customer
+	//     and sell for them, bypassing the customer-facing switches entirely.
+	staffSelling := middleware.GetRoleName(c) != "customer"
+	var sellCustomer *entity.User
+
+	status := service.GetSalesStatus(ctrl.db)
+
+	if staffSelling {
+		if req.CustomerID == 0 {
+			return response.BadRequest(c, "กรุณาเลือกลูกค้าก่อนทำการขาย")
+		}
+		cust, err := ctrl.resolveSellCustomer(req.CustomerID)
+		if err != nil {
+			return response.BadRequest(c, err.Error())
+		}
+		sellCustomer = cust
+	} else {
+		// Block creation when bills_open config is false.
+		var billsOpenCfg entity.SystemConfig
+		if err := ctrl.db.Where("key = ?", "bills_open").First(&billsOpenCfg).Error; err == nil {
+			if billsOpenCfg.Value == "false" {
+				return response.BadRequest(c, "ขณะนี้ปิดรับซื้อ ไม่สามารถสร้างบิลได้")
+			}
+		}
+		// Block creation when the store is closed.
+		if !status.IsOpen {
+			return response.BadRequest(c, "ขณะนี้ปิดทำการ ไม่สามารถสร้างบิลได้")
 		}
 	}
 
-	// Block creation when closed; otherwise pick the price source for the round.
-	status := service.GetSalesStatus(ctrl.db)
-	if !status.IsOpen {
-		return response.BadRequest(c, "ขณะนี้ปิดทำการ ไม่สามารถสร้างบิลได้")
-	}
+	// Stamp the gold-price round for the document. Real-time only applies during
+	// the real-time window; otherwise (incl. staff selling after hours) the latest
+	// association round is used.
 	if status.PriceMode == service.PriceModeRealtime {
 		// Lock a snapshot of the real-time price for this document.
 		req.GoldRound, req.GoldPriceID = service.SnapshotRealtimeRound(ctrl.db)
@@ -110,21 +135,68 @@ func (ctrl *BillController) CreateBill(c *fiber.Ctx) error {
 		req.GoldRound, req.GoldPriceID = service.CurrentRound(ctrl.db)
 	}
 
-	// Always derive store/branch from JWT (never from the payload), like employees.
+	// Store/branch record where the sale happened (the caller's), never from the
+	// payload. For staff selling, CreatedBy is the chosen customer so the bill
+	// shows up in their account; for the self-service flow it is the caller.
 	if storeID := middleware.GetStoreID(c); storeID != nil {
 		req.StoreID = storeID
 	}
 	if branchID := middleware.GetBranchID(c); branchID != nil {
 		req.BranchID = branchID
 	}
-	req.CreatedByUserID = middleware.GetUserID(c)
+	if sellCustomer != nil {
+		req.CreatedByUserID = sellCustomer.ID
+	} else {
+		req.CreatedByUserID = middleware.GetUserID(c)
+	}
 
 	bill, err := ctrl.billUsecase.CreateBill(&req)
 	if err != nil {
 		return response.BadRequest(c, err.Error())
 	}
-	middleware.SetActivityDescription(c, fmt.Sprintf("ลูกค้าสร้างบิลขาย %s", bill.Code))
+	if sellCustomer != nil {
+		middleware.SetActivityDescription(c, fmt.Sprintf("ขายแทนลูกค้า %s (บิล %s)", sellCustomer.Name, bill.Code))
+	} else {
+		middleware.SetActivityDescription(c, fmt.Sprintf("ลูกค้าสร้างบิลขาย %s", bill.Code))
+	}
 	return response.Created(c, "Bill created", bill)
+}
+
+// resolveSellCustomer validates that the given id belongs to an active customer.
+// Customers are a global pool (no store binding), so any staff member holding
+// bills.sell may sell on behalf of any of them.
+func (ctrl *BillController) resolveSellCustomer(customerID uint) (*entity.User, error) {
+	var cust entity.User
+	err := ctrl.db.
+		Joins("JOIN roles ON roles.id = users.role_id").
+		Where("users.id = ? AND roles.name = ?", customerID, "customer").
+		First(&cust).Error
+	if err != nil {
+		return nil, errors.New("ไม่พบลูกค้าที่เลือก")
+	}
+	if !cust.IsActive {
+		return nil, errors.New("ลูกค้ารายนี้ถูกปิดใช้งาน ไม่สามารถขายแทนได้")
+	}
+	return &cust, nil
+}
+
+// ListSellCustomers returns the customer pool for the staff "sell on behalf"
+// picker. Unlike /customers it is not store-scoped (customers have no store
+// binding), so owners/employees can find any active customer to sell for.
+func (ctrl *BillController) ListSellCustomers(c *fiber.Ctx) error {
+	search := strings.TrimSpace(c.Query("search"))
+	q := ctrl.db.Model(&entity.User{}).
+		Joins("JOIN roles ON roles.id = users.role_id").
+		Where("roles.name = ? AND users.is_active = ?", "customer", true)
+	if search != "" {
+		like := "%" + search + "%"
+		q = q.Where("users.name ILIKE ? OR users.email ILIKE ? OR users.phone ILIKE ?", like, like, like)
+	}
+	var customers []entity.User
+	if err := q.Order("users.name ASC").Limit(50).Find(&customers).Error; err != nil {
+		return response.InternalServerError(c, err.Error())
+	}
+	return response.Success(c, "ok", customers)
 }
 
 func (ctrl *BillController) GetAllBills(c *fiber.Ctx) error {

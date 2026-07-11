@@ -37,6 +37,10 @@ type CreateBillRequest struct {
 	StoreID         *uint  `json:"-"`
 	BranchID        *uint  `json:"-"`
 	CreatedByUserID uint   `json:"-"`
+	// CustomerID is only honoured when a staff member (master/owner/employee)
+	// sells on behalf of a customer; the controller validates it and uses it as
+	// the bill's CreatedBy. Ignored for the customer self-service flow.
+	CustomerID      uint   `json:"customer_id"`
 	// GoldRound/GoldPriceID record the gold-price round at creation (set in the
 	// controller from the latest gold price) for reporting.
 	GoldRound       string `json:"-"`
