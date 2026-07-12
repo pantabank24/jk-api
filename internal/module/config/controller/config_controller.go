@@ -33,6 +33,12 @@ func (ctrl *ConfigController) GetCustomWeightStatus(c *fiber.Ctx) error {
 	return response.Success(c, "ok", service.GetCustomWeightStatus(ctrl.db))
 }
 
+// GetSilverSellStatus reports whether customers may sell silver right now.
+// Available to any authenticated user so customers can check before selling.
+func (ctrl *ConfigController) GetSilverSellStatus(c *fiber.Ctx) error {
+	return response.Success(c, "ok", service.GetSilverSellStatus(ctrl.db))
+}
+
 // GetBillsOpenStatus reports whether customer bill creation is enabled.
 // Available to any authenticated user so customers can check before selling.
 func (ctrl *ConfigController) GetBillsOpenStatus(c *fiber.Ctx) error {

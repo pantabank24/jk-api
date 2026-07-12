@@ -23,6 +23,8 @@ func SetupConfigRoutes(v1 fiber.Router, db *gorm.DB, cfg *config.Config, cronSvc
 		cfgGroup.Get("/custom-weight-status", ctrl.GetCustomWeightStatus)
 		// Auth-only: any user can check whether customer bill creation is open.
 		cfgGroup.Get("/bills-status", ctrl.GetBillsOpenStatus)
+		// Auth-only: any user can check whether customer silver selling is open.
+		cfgGroup.Get("/silver-sell-status", ctrl.GetSilverSellStatus)
 		cfgGroup.Get("/", middleware.RequirePermission(db, "config.read"), ctrl.GetAll)
 		cfgGroup.Put("/", middleware.RequirePermission(db, "config.update"), ctrl.Update)
 	}

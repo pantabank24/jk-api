@@ -111,16 +111,34 @@ func (ctrl *BillController) CreateBill(c *fiber.Ctx) error {
 		}
 		sellCustomer = cust
 	} else {
-		// Block creation when bills_open config is false.
-		var billsOpenCfg entity.SystemConfig
-		if err := ctrl.db.Where("key = ?", "bills_open").First(&billsOpenCfg).Error; err == nil {
-			if billsOpenCfg.Value == "false" {
-				return response.BadRequest(c, "ขณะนี้ปิดรับซื้อ ไม่สามารถสร้างบิลได้")
+		// Gold and silver open independently, so validate each metal against its
+		// own schedule (a customer may sell silver after gold hours, and vice versa).
+		hasGold, hasSilver := false, false
+		for _, it := range req.Items {
+			if it.Metal == "" || it.Metal == "gold" {
+				hasGold = true
+			} else {
+				hasSilver = true
 			}
 		}
-		// Block creation when the store is closed.
-		if !status.IsOpen {
-			return response.BadRequest(c, "ขณะนี้ปิดทำการ ไม่สามารถสร้างบิลได้")
+
+		if hasGold {
+			// Block gold when bills_open is false or the store is closed.
+			var billsOpenCfg entity.SystemConfig
+			if err := ctrl.db.Where("key = ?", "bills_open").First(&billsOpenCfg).Error; err == nil {
+				if billsOpenCfg.Value == "false" {
+					return response.BadRequest(c, "ขณะนี้ปิดรับซื้อทอง ไม่สามารถสร้างบิลได้")
+				}
+			}
+			if !status.IsOpen {
+				return response.BadRequest(c, "ขณะนี้ปิดทำการ (ทอง) ไม่สามารถสร้างบิลได้")
+			}
+		}
+		if hasSilver {
+			// Silver follows its own schedule (enable + close-shop + daily cutoff).
+			if !service.GetSilverSellStatus(ctrl.db).IsOpen {
+				return response.BadRequest(c, "ขณะนี้ปิดรับซื้อเงิน ไม่สามารถสร้างบิลได้")
+			}
 		}
 	}
 
