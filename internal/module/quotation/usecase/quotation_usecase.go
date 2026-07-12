@@ -1,6 +1,7 @@
 package usecase
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -95,6 +96,10 @@ type CreateQuotationRequest struct {
 	// (legacy whole-bill behaviour).
 	BillItemIDs     []uint `json:"bill_item_ids"`
 	Items           []CreateQuotationItemRequest `json:"items"`
+	// Page1Items is the detailed per-item breakdown (raw JSON array) for the
+	// printed page 1. `Items` is stored consolidated (one line per metal); this
+	// keeps the itemised view so reprints never fall back to the merged lines.
+	Page1Items      json.RawMessage `json:"page1_items"`
 }
 
 type CreateQuotationItemRequest struct {
@@ -227,6 +232,7 @@ func (u *quotationUsecase) CreateQuotation(req *CreateQuotationRequest) (*entity
 		StoreLogo:    req.StoreLogo,
 		NoHeader:     req.NoHeader,
 		Items:       items,
+		Page1Items:  req.Page1Items,
 	}
 
 	if err := u.quotationRepo.Create(quotation); err != nil {

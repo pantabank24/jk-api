@@ -1,6 +1,7 @@
 package entity
 
 import (
+	"encoding/json"
 	"time"
 
 	"gorm.io/gorm"
@@ -59,6 +60,11 @@ type Quotation struct {
 	// only for legacy quotations that predate the snapshot columns).
 	NoHeader     bool   `json:"no_header"     gorm:"default:false"`
 	Items       []QuotationItem  `json:"items,omitempty" gorm:"foreignKey:QuotationID"`
+	// Page1Items holds the detailed per-item lines (JSON array) as issued, so the
+	// printed quotation's page 1 can always list each item — even though `Items`
+	// above is stored consolidated (one line per metal). Kept on the issued
+	// quotation itself so it survives regardless of partial-ticking / delivery logs.
+	Page1Items  json.RawMessage  `json:"page1_items,omitempty" gorm:"type:jsonb"`
 	Images      []QuotationImage `json:"images,omitempty" gorm:"foreignKey:QuotationID"`
 	CreatedAt   time.Time       `json:"created_at"`
 	UpdatedAt   time.Time       `json:"updated_at"`
