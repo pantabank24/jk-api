@@ -26,7 +26,9 @@ func SetupPublicRoutes(v1 fiber.Router, db *gorm.DB, cfg *config.Config) {
 
 	pub := v1.Group("/public", middleware.APIKeyMiddleware(cfg))
 	{
-		pub.Get("/gold-prices/latest", goldCtrl.GetLatest)
+		// ราคาสมาคม (auto) เท่านั้น — ไม่เอา manual override ของร้านใดร้านหนึ่ง
+		// เพราะทุกหน้าร้าน (jk, chinracha, kk, pw, wachara, aelomthong) ใช้เส้นนี้ร่วมกัน
+		pub.Get("/gold-prices/latest", goldCtrl.GetLatestAssociation)
 		pub.Get("/metal-prices/latest", metalCtrl.GetLatest)
 	}
 }

@@ -54,6 +54,17 @@ func (ctrl *GoldPriceController) GetLatest(c *fiber.Ctx) error {
 	return response.Success(c, "Gold price retrieved", gp)
 }
 
+// GetLatestAssociation returns the latest association (auto) price, ignoring any
+// manual override. Serves the public storefronts: a manual price is one shop's
+// own decision and must not leak onto the other shops' sites.
+func (ctrl *GoldPriceController) GetLatestAssociation(c *fiber.Ctx) error {
+	gp, err := ctrl.repo.GetLatestAuto()
+	if err != nil {
+		return response.Success(c, "ยังไม่มีข้อมูลราคาทอง", nil)
+	}
+	return response.Success(c, "Gold price retrieved", gp)
+}
+
 func (ctrl *GoldPriceController) GetHistory(c *fiber.Ctx) error {
 	limit, _ := strconv.Atoi(c.Query("limit", "50"))
 	if limit < 1 || limit > 200 {
