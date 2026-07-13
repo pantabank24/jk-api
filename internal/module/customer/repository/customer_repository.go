@@ -79,7 +79,7 @@ func (r *customerRepository) FindByID(id uint) (*entity.User, error) {
 		return nil, err
 	}
 	var user entity.User
-	err = r.db.Preload("Role").Preload("Store").Preload("Branch").
+	err = r.db.Preload("Role").Preload("Store").Preload("Branch").Preload("Bank").
 		Where("role_id = ?", roleID).First(&user, id).Error
 	if err != nil {
 		return nil, err

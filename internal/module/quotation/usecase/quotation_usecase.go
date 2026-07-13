@@ -19,6 +19,7 @@ type QuotationUsecase interface {
 	GetQuotationByID(id uint) (*entity.Quotation, error)
 	UpdateQuotationStatus(id uint, req *UpdateStatusRequest, allowApproved bool) (*entity.Quotation, error)
 	UpdateQuotation(id uint, req *UpdateQuotationRequest, allowApproved bool) (*entity.Quotation, error)
+	SetPaymentMethod(id uint, method string) (*entity.Quotation, error)
 	DeleteQuotation(id uint) error
 	AddImages(id uint, urls []string, imageType string) error
 	// PreviewCreditReset/ResetMemberCredit bulk-refund the credit charged on a
@@ -48,17 +49,17 @@ type CreditResetResult struct {
 
 type CreateQuotationRequest struct {
 	// Store/Branch are set from JWT context in controller — NOT from payload
-	StoreID  *uint  `json:"-"`
-	BranchID *uint  `json:"-"`
+	StoreID  *uint `json:"-"`
+	BranchID *uint `json:"-"`
 	// CreatedByUserID and UsesCredits are set from JWT in controller.
 	// UsesCredits is true when the creator's role holds credits.use — its
 	// quotations deduct credits from the creator's member profile on creation.
-	CreatedByUserID uint   `json:"-"`
-	UsesCredits     bool   `json:"-"`
+	CreatedByUserID uint `json:"-"`
+	UsesCredits     bool `json:"-"`
 	// GoldRound/GoldPriceID record the gold-price round in effect at creation
 	// (set from the latest gold price in the controller) for reporting.
-	GoldRound       string `json:"-"`
-	GoldPriceID     *uint  `json:"-"`
+	GoldRound   string `json:"-"`
+	GoldPriceID *uint  `json:"-"`
 	// Store/Branch header snapshot — resolved from StoreID/BranchID in the
 	// controller and copied onto the saved quotation, so reprinting later
 	// always shows the header as it was on the day of issue.
@@ -72,48 +73,50 @@ type CreateQuotationRequest struct {
 	StoreLogo    string `json:"-"`
 	// PayloadStoreID lets a master assign the quotation to a chosen store (master
 	// has no store_id of their own). Ignored for employee (set from JWT).
-	PayloadStoreID  *uint  `json:"store_id"`
+	PayloadStoreID *uint `json:"store_id"`
 	// PayloadBranchID picks which branch's receipt header to snapshot. Master and
 	// owner choose it (defaulting to the store's main branch); employees are
 	// locked to their JWT branch. The whole header is copied from this branch.
-	PayloadBranchID *uint  `json:"branch_id"`
+	PayloadBranchID *uint `json:"branch_id"`
 	// NoHeader opts out of the receipt-header snapshot — the quotation prints
 	// without a header. Store/branch linkage (lists, reporting) is unaffected.
-	NoHeader        bool   `json:"no_header"`
-	MemberID        *uint  `json:"member_id"`
-	Note            string `json:"note"`
-	SignerName      string `json:"signer_name"`
-	SignerPhone     string `json:"signer_phone"`
-	PDPAConsent     bool   `json:"pdpa_consent"`
+	NoHeader    bool   `json:"no_header"`
+	MemberID    *uint  `json:"member_id"`
+	Note        string `json:"note"`
+	SignerName  string `json:"signer_name"`
+	SignerPhone string `json:"signer_phone"`
+	// PaymentMethod: "" | "cash" | "transfer" — the ชำระโดย tick on the document.
+	PaymentMethod string `json:"payment_method"`
+	PDPAConsent   bool   `json:"pdpa_consent"`
 	// BillID / BillIDs link this quotation to the customer's bill(s) it is issued
 	// for — those bills then advance to "รอตรวจบิล". BillIDs lets a master combine
 	// all of a customer's pending bills into one quotation.
-	BillID          *uint  `json:"bill_id"`
-	BillIDs         []uint `json:"bill_ids"`
+	BillID  *uint  `json:"bill_id"`
+	BillIDs []uint `json:"bill_ids"`
 	// BillItemIDs are the customer bill items the master TICKED for this round.
 	// Bills fully covered advance whole; partially covered bills are split so the
 	// unticked items stay "รอออกบิล" for a later round. Empty = cover everything
 	// (legacy whole-bill behaviour).
-	BillItemIDs     []uint `json:"bill_item_ids"`
-	Items           []CreateQuotationItemRequest `json:"items"`
+	BillItemIDs []uint                       `json:"bill_item_ids"`
+	Items       []CreateQuotationItemRequest `json:"items"`
 	// Page1Items is the detailed per-item breakdown (raw JSON array) for the
 	// printed page 1. `Items` is stored consolidated (one line per metal); this
 	// keeps the itemised view so reprints never fall back to the merged lines.
-	Page1Items      json.RawMessage `json:"page1_items"`
+	Page1Items json.RawMessage `json:"page1_items"`
 }
 
 type CreateQuotationItemRequest struct {
-	TypeID   string  `json:"type_id"`
-	TypeName string  `json:"type_name"`
+	TypeID   string `json:"type_id"`
+	TypeName string `json:"type_name"`
 	// Metal tags the item (gold|silver|platinum|palladium). Empty defaults to
 	// gold — only gold items participate in the bill debt/credit balance.
-	Metal    string  `json:"metal"`
-	Plus     float64 `json:"plus"`
-	Price    float64 `json:"price"`
-	Percent  float64 `json:"percent"`
-	Weight   float64 `json:"weight"`
-	PerGram  float64 `json:"per_gram"`
-	Total    float64 `json:"total"`
+	Metal   string  `json:"metal"`
+	Plus    float64 `json:"plus"`
+	Price   float64 `json:"price"`
+	Percent float64 `json:"percent"`
+	Weight  float64 `json:"weight"`
+	PerGram float64 `json:"per_gram"`
+	Total   float64 `json:"total"`
 }
 
 // itemMetal normalises an item's metal, treating empty as gold (legacy payloads).
@@ -135,9 +138,12 @@ type UpdateStatusRequest struct {
 }
 
 type UpdateQuotationRequest struct {
-	MemberID *uint                       `json:"member_id"`
-	Note     string                      `json:"note"`
-	Items    []CreateQuotationItemRequest `json:"items"`
+	MemberID *uint  `json:"member_id"`
+	Note     string `json:"note"`
+	// PaymentMethod: pointer so omitting it leaves the stored tick untouched
+	// (edits that don't touch the ชำระโดย section must not clear it).
+	PaymentMethod *string                      `json:"payment_method"`
+	Items         []CreateQuotationItemRequest `json:"items"`
 	// AdjustCredits, when true, reconciles the creator's credit balance by the
 	// change in total (charging more / refunding) and logs a credit transaction.
 	// Only applies when a master edits and the creator's role uses credits.
@@ -208,31 +214,32 @@ func (u *quotationUsecase) CreateQuotation(req *CreateQuotationRequest) (*entity
 
 	createdBy := req.CreatedByUserID
 	quotation := &entity.Quotation{
-		StoreID:     req.StoreID,
-		BranchID:    req.BranchID,
-		MemberID:    req.MemberID,
-		CreatedBy:   &createdBy,
-		Code:        code,
-		Status:      1, // approved immediately on creation
-		Note:        req.Note,
-		TotalAmount: totalAmount,
-		GoldRound:   req.GoldRound,
-		GoldPriceID: req.GoldPriceID,
-		SignerName:  req.SignerName,
-		SignerPhone: req.SignerPhone,
-		PDPAConsent: req.PDPAConsent,
-		BillID:      req.BillID,
-		StoreName:    req.StoreName,
-		StoreBranch:  req.StoreBranch,
-		StoreAddress: req.StoreAddress,
-		StorePhone:   req.StorePhone,
-		StoreTaxID:   req.StoreTaxID,
-		StoreTaxName: req.StoreTaxName,
-		StoreWebsite: req.StoreWebsite,
-		StoreLogo:    req.StoreLogo,
-		NoHeader:     req.NoHeader,
-		Items:       items,
-		Page1Items:  req.Page1Items,
+		StoreID:       req.StoreID,
+		BranchID:      req.BranchID,
+		MemberID:      req.MemberID,
+		CreatedBy:     &createdBy,
+		Code:          code,
+		Status:        1, // approved immediately on creation
+		Note:          req.Note,
+		TotalAmount:   totalAmount,
+		GoldRound:     req.GoldRound,
+		GoldPriceID:   req.GoldPriceID,
+		SignerName:    req.SignerName,
+		SignerPhone:   req.SignerPhone,
+		PaymentMethod: req.PaymentMethod,
+		PDPAConsent:   req.PDPAConsent,
+		BillID:        req.BillID,
+		StoreName:     req.StoreName,
+		StoreBranch:   req.StoreBranch,
+		StoreAddress:  req.StoreAddress,
+		StorePhone:    req.StorePhone,
+		StoreTaxID:    req.StoreTaxID,
+		StoreTaxName:  req.StoreTaxName,
+		StoreWebsite:  req.StoreWebsite,
+		StoreLogo:     req.StoreLogo,
+		NoHeader:      req.NoHeader,
+		Items:         items,
+		Page1Items:    req.Page1Items,
 	}
 
 	if err := u.quotationRepo.Create(quotation); err != nil {
@@ -350,11 +357,18 @@ func (u *quotationUsecase) UpdateQuotationStatus(id uint, req *UpdateStatusReque
 	}
 
 	prevStatus := quotation.Status
-	// Changing an already-approved quotation (e.g. cancelling it) is master-only,
-	// mirroring the edit rule — see the controller.
+	// Whether an already-approved quotation may still change status (i.e. be
+	// cancelled) is the caller's call — see the controller.
 	if prevStatus == 1 && req.Status != 1 && !allowApproved {
 		return nil, errors.New("ไม่มีสิทธิ์เปลี่ยนสถานะใบเสนอราคาที่อนุมัติแล้ว")
 	}
+	// Refund before the status flips: refundCredits only pays back a quotation
+	// that is still approved/charged.
+	refunded := false
+	if req.Status == 2 && req.RefundCredits {
+		refunded = u.refundCredits(quotation, "คืนเครดิตจากการยกเลิกใบเสนอราคา ")
+	}
+
 	quotation.Status = req.Status
 	if req.Note != "" {
 		quotation.Note = req.Note
@@ -403,29 +417,9 @@ func (u *quotationUsecase) UpdateQuotationStatus(id uint, req *UpdateStatusReque
 		}
 	}
 
-	// On cancellation (status=2): optionally refund the credits that were charged
-	// on creation, then notify. Refund only when the quotation was approved/charged
-	// (prevStatus==1) and the creator's role uses credits.
+	// On cancellation (status=2): notify the creator, mentioning the refund the
+	// block above already made.
 	if req.Status == 2 && quotation.CreatedBy != nil {
-		refunded := false
-		if prevStatus == 1 && req.RefundCredits && u.memberRepo.UserUsesCredits(*quotation.CreatedBy) {
-			if member, err := u.memberRepo.FindByUserID(*quotation.CreatedBy); err == nil && member != nil {
-				member.Credits += quotation.TotalAmount
-				_ = u.memberRepo.Update(member)
-				_ = u.memberRepo.CreateCreditTransaction(&entity.CreditTransaction{
-					MemberID:    member.ID,
-					StoreID:     member.StoreID,
-					BranchID:    member.BranchID,
-					Action:      0, // deposit (refund)
-					Amount:      quotation.TotalAmount,
-					Balance:     member.Credits,
-					Description: "คืนเครดิตจากการยกเลิกใบเสนอราคา " + quotation.Code,
-					CreatedBy:   quotation.CreatedBy,
-				})
-				refunded = true
-			}
-		}
-
 		body := fmt.Sprintf("ใบเสนอราคา %s ถูกยกเลิก", quotation.Code)
 		if req.RejectReason != "" {
 			body += " เหตุผล: " + req.RejectReason
@@ -444,6 +438,29 @@ func (u *quotationUsecase) UpdateQuotationStatus(id uint, req *UpdateStatusReque
 	return quotation, nil
 }
 
+// SetPaymentMethod records the ชำระโดย tick on an already-issued quotation without
+// touching anything else. The general edit path (UpdateQuotation) rewrites member,
+// note and items wholesale, so amending just the payment method goes through here.
+func (u *quotationUsecase) SetPaymentMethod(id uint, method string) (*entity.Quotation, error) {
+	switch method {
+	case "", "cash", "transfer":
+	default:
+		return nil, errors.New("วิธีชำระเงินไม่ถูกต้อง")
+	}
+	quotation, err := u.quotationRepo.FindByID(id)
+	if err != nil {
+		return nil, errors.New("quotation not found")
+	}
+	quotation.PaymentMethod = method
+	// Clear preloaded slices so db.Save cannot cascade-upsert them.
+	quotation.Items = nil
+	quotation.Images = nil
+	if err := u.quotationRepo.Update(quotation); err != nil {
+		return nil, err
+	}
+	return quotation, nil
+}
+
 func (u *quotationUsecase) UpdateQuotation(id uint, req *UpdateQuotationRequest, allowApproved bool) (*entity.Quotation, error) {
 	quotation, err := u.quotationRepo.FindByID(id)
 	if err != nil {
@@ -458,6 +475,9 @@ func (u *quotationUsecase) UpdateQuotation(id uint, req *UpdateQuotationRequest,
 	oldTotal := quotation.TotalAmount
 	quotation.MemberID = req.MemberID
 	quotation.Note = req.Note
+	if req.PaymentMethod != nil {
+		quotation.PaymentMethod = *req.PaymentMethod
+	}
 
 	if len(req.Items) > 0 {
 		var totalAmount float64
@@ -524,12 +544,51 @@ func (u *quotationUsecase) UpdateQuotation(id uint, req *UpdateQuotationRequest,
 	return u.quotationRepo.FindByID(id)
 }
 
+// DeleteQuotation soft-deletes the quotation, returning the credits it charged
+// first. Deleting is the other way the shop voids a quotation, and the row drops
+// out of every refund sweep once it is soft-deleted (they all skip deleted rows),
+// so this is the last chance to hand the credit back.
 func (u *quotationUsecase) DeleteQuotation(id uint) error {
-	_, err := u.quotationRepo.FindByID(id)
+	quotation, err := u.quotationRepo.FindByID(id)
 	if err != nil {
 		return errors.New("quotation not found")
 	}
+	u.refundCredits(quotation, "คืนเครดิตจากการลบใบเสนอราคา ")
 	return u.quotationRepo.Delete(id)
+}
+
+// refundCredits returns the credits charged on an approved quotation to its
+// creator's member profile and flags it refunded, so no later path (cancel,
+// delete, credit reset) can pay it back twice. No-op unless the quotation is
+// still approved, unrefunded, and its creator's role uses credits.
+func (u *quotationUsecase) refundCredits(quotation *entity.Quotation, description string) bool {
+	if quotation.Status != 1 || quotation.CreditsRefunded || quotation.IsBill || quotation.CreatedBy == nil {
+		return false
+	}
+	if !u.memberRepo.UserUsesCredits(*quotation.CreatedBy) {
+		return false
+	}
+	member, err := u.memberRepo.FindByUserID(*quotation.CreatedBy)
+	if err != nil || member == nil {
+		return false
+	}
+	member.Credits += quotation.TotalAmount
+	if err := u.memberRepo.Update(member); err != nil {
+		return false
+	}
+	_ = u.memberRepo.CreateCreditTransaction(&entity.CreditTransaction{
+		MemberID:    member.ID,
+		StoreID:     member.StoreID,
+		BranchID:    member.BranchID,
+		Action:      0, // deposit (refund)
+		Amount:      quotation.TotalAmount,
+		Balance:     member.Credits,
+		Description: description + quotation.Code,
+		CreatedBy:   quotation.CreatedBy,
+	})
+	quotation.CreditsRefunded = true
+	_ = u.quotationRepo.MarkCreditsRefunded([]uint{quotation.ID})
+	return true
 }
 
 func (u *quotationUsecase) AddImages(id uint, urls []string, imageType string) error {

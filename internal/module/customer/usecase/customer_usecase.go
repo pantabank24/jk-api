@@ -23,24 +23,41 @@ type CustomerUsecase interface {
 }
 
 type CreateCustomerRequest struct {
-	Name      string `json:"name" validate:"required"`
-	Email     string `json:"email" validate:"required,email"`
-	Password  string `json:"password" validate:"required,min=6"`
-	Phone     string `json:"phone"`
-	StoreName string `json:"store_name"`
-	Address   string `json:"address"`
-	TaxID     string `json:"tax_id"`
+	Name            string `json:"name" validate:"required"`
+	Email           string `json:"email" validate:"required,email"`
+	Password        string `json:"password" validate:"required,min=6"`
+	Phone           string `json:"phone"`
+	StoreName       string `json:"store_name"`
+	Address         string `json:"address"`
+	TaxID           string `json:"tax_id"`
+	BankID          *uint  `json:"bank_id"`
+	BankAccountNo   string `json:"bank_account_no"`
+	BankAccountName string `json:"bank_account_name"`
 }
 
 type UpdateCustomerRequest struct {
-	Name      string `json:"name"`
-	Email     string `json:"email" validate:"omitempty,email"`
-	Password  string `json:"password"`
-	Phone     string `json:"phone"`
+	Name      string  `json:"name"`
+	Email     string  `json:"email" validate:"omitempty,email"`
+	Password  string  `json:"password"`
+	Phone     string  `json:"phone"`
 	StoreName *string `json:"store_name"`
 	Address   *string `json:"address"`
 	TaxID     *string `json:"tax_id"`
-	IsActive  *bool  `json:"is_active"`
+	// Pointers so clearing a bank (bank_id: null) is distinguishable from "not sent".
+	BankID          *uint   `json:"bank_id"`
+	BankAccountNo   *string `json:"bank_account_no"`
+	BankAccountName *string `json:"bank_account_name"`
+	IsActive        *bool   `json:"is_active"`
+}
+
+// normalizeBankID maps "no bank" to a NULL bank_id. The form always sends a value,
+// using 0 for "ไม่ระบุ" (an empty <Select> yields no id), so 0 must not be written
+// as a real foreign key.
+func normalizeBankID(id *uint) *uint {
+	if id == nil || *id == 0 {
+		return nil
+	}
+	return id
 }
 
 type customerUsecase struct {
@@ -67,15 +84,18 @@ func (u *customerUsecase) CreateCustomer(req *CreateCustomerRequest) (*entity.Us
 	}
 
 	user := &entity.User{
-		Name:      req.Name,
-		Email:     req.Email,
-		Password:  hashed,
-		Phone:     req.Phone,
-		StoreName: req.StoreName,
-		Address:   req.Address,
-		TaxID:     req.TaxID,
-		RoleID:    &roleID,
-		IsActive:  true,
+		Name:            req.Name,
+		Email:           req.Email,
+		Password:        hashed,
+		Phone:           req.Phone,
+		StoreName:       req.StoreName,
+		Address:         req.Address,
+		TaxID:           req.TaxID,
+		BankID:          normalizeBankID(req.BankID),
+		BankAccountNo:   req.BankAccountNo,
+		BankAccountName: req.BankAccountName,
+		RoleID:          &roleID,
+		IsActive:        true,
 	}
 	if err := u.customerRepo.Create(user); err != nil {
 		return nil, err
@@ -130,6 +150,15 @@ func (u *customerUsecase) UpdateCustomer(id uint, req *UpdateCustomerRequest) (*
 	}
 	if req.TaxID != nil {
 		user.TaxID = *req.TaxID
+	}
+	if req.BankID != nil {
+		user.BankID = normalizeBankID(req.BankID) // 0 = ไม่ระบุ → clear it
+	}
+	if req.BankAccountNo != nil {
+		user.BankAccountNo = *req.BankAccountNo
+	}
+	if req.BankAccountName != nil {
+		user.BankAccountName = *req.BankAccountName
 	}
 	if req.IsActive != nil {
 		user.IsActive = *req.IsActive

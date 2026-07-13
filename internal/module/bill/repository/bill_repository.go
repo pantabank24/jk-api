@@ -116,7 +116,8 @@ func (r *billRepository) FindByID(id uint) (*entity.Quotation, error) {
 	var bill entity.Quotation
 	// IssuedQuotation (with its items/images) is the real bill the customer views —
 	// they only have bills.read, not quotations.read.
-	err := r.db.Preload("Items").Preload("Images").Preload("Member").Preload("Creator").
+	// Creator.Bank feeds the payout details printed on the quotation (ชำระโดย เงินโอน).
+	err := r.db.Preload("Items").Preload("Images").Preload("Member").Preload("Creator").Preload("Creator.Bank").
 		Preload("Store").Preload("Branch").
 		Preload("IssuedQuotation.Items").Preload("IssuedQuotation.Images").
 		Where("is_bill = ?", true).First(&bill, id).Error

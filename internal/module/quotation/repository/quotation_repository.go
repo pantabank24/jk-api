@@ -69,14 +69,17 @@ func (r *quotationRepository) FindAll(storeID *uint, branchID *uint, createdBy *
 
 	query.Count(&total)
 	offset := (page - 1) * limit
-	err := query.Preload("Items").Preload("Images").Preload("Member").Preload("Member.User").Preload("Creator").
+	err := query.Preload("Items").Preload("Images").Preload("Member").Preload("Member.User").Preload("Member.User.Bank").
+		Preload("Creator").
 		Offset(offset).Limit(limit).Order("quotations.id DESC").Find(&quotations).Error
 	return quotations, total, err
 }
 
 func (r *quotationRepository) FindByID(id uint) (*entity.Quotation, error) {
 	var quotation entity.Quotation
-	err := r.db.Preload("Items").Preload("Images").Preload("Member").Preload("Member.User").Preload("Creator").
+	// Bank relations feed the payout details printed on the quotation (ชำระโดย เงินโอน).
+	err := r.db.Preload("Items").Preload("Images").Preload("Member").Preload("Member.User").Preload("Member.User.Bank").
+		Preload("Creator").Preload("Creator.Bank").
 		Preload("Store").Preload("Branch").First(&quotation, id).Error
 	if err != nil {
 		return nil, err

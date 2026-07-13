@@ -215,9 +215,11 @@ func (ctrl *QuotationController) UpdateQuotationStatus(c *fiber.Ctx) error {
 
 	// Authorization is governed entirely by the quotations.update permission on
 	// this route — no extra role-name gate. Approving (status=1) is part of that
-	// permission's scope ("แก้ไข/อนุมัติ/ยกเลิก").
-	// Only master may change an already-approved quotation (e.g. cancel it).
-	quotation, err := ctrl.quotationUsecase.UpdateQuotationStatus(uint(id), &req, middleware.IsMaster(c))
+	// permission's scope ("แก้ไข/อนุมัติ/ยกเลิก"), and so is cancelling one that is
+	// already approved: quotations are auto-approved on creation, so a master-only
+	// rule there would leave an owner with no way to void a quotation but to delete
+	// it — which used to strand the credit it charged.
+	quotation, err := ctrl.quotationUsecase.UpdateQuotationStatus(uint(id), &req, true)
 	if err != nil {
 		return response.BadRequest(c, err.Error())
 	}
@@ -248,6 +250,26 @@ func (ctrl *QuotationController) UpdateQuotation(c *fiber.Ctx) error {
 	}
 	middleware.SetActivityDescription(c, fmt.Sprintf("แก้ไขใบเสนอราคา %s", quotation.Code))
 	return response.Success(c, "Quotation updated", quotation)
+}
+
+// UpdatePaymentMethod records the ชำระโดย tick (cash | transfer | "") on an issued
+// quotation. Separate from the content edit so it never rewrites items/member.
+func (ctrl *QuotationController) UpdatePaymentMethod(c *fiber.Ctx) error {
+	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
+	if err != nil {
+		return response.BadRequest(c, "Invalid quotation ID")
+	}
+	var req struct {
+		PaymentMethod string `json:"payment_method"`
+	}
+	if err := c.BodyParser(&req); err != nil {
+		return response.BadRequest(c, "Invalid request body")
+	}
+	quotation, err := ctrl.quotationUsecase.SetPaymentMethod(uint(id), req.PaymentMethod)
+	if err != nil {
+		return response.BadRequest(c, err.Error())
+	}
+	return response.Success(c, "Payment method updated", quotation)
 }
 
 func (ctrl *QuotationController) DeleteQuotation(c *fiber.Ctx) error {

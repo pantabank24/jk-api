@@ -32,6 +32,7 @@ func SetupQuotationRoutes(v1 fiber.Router, db *gorm.DB, cfg *config.Config) {
 		quotations.Post("/",      middleware.RequirePermission(db, "quotations.create"), ctrl.CreateQuotation)
 		quotations.Put("/:id",    middleware.RequirePermission(db, "quotations.update"), ctrl.UpdateQuotationStatus)   // status change
 		quotations.Patch("/:id",  middleware.RequirePermission(db, "quotations.update"), ctrl.UpdateQuotation)          // content edit
+		quotations.Patch("/:id/payment-method", middleware.RequirePermission(db, "quotations.update"), ctrl.UpdatePaymentMethod) // ชำระโดย tick only
 		quotations.Delete("/:id", middleware.RequirePermission(db, "quotations.delete"), ctrl.DeleteQuotation)
 		quotations.Get("/:id/export", middleware.RequirePermission(db, "quotations.read"), ctrl.ExportQuotation)
 		quotations.Post("/:id/images", middleware.RequirePermission(db, "quotations.create"), ctrl.UploadImages)
