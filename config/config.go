@@ -28,6 +28,8 @@ type Config struct {
 
 	// Real-time gold price sidecar (tv-price-svc)
 	GoldRealtimeURL string
+
+	PublicAPIKey string
 }
 
 func LoadConfig() *Config {
@@ -56,6 +58,9 @@ func LoadConfig() *Config {
 
 		// Real-time gold price sidecar
 		GoldRealtimeURL: getEnv("GOLD_REALTIME_URL", "http://host.docker.internal:8000"),
+
+		// Shared secret for the /api/v1/public/* read-only routes
+		PublicAPIKey: getEnv("PUBLIC_API_KEY", ""),
 	}
 }
 

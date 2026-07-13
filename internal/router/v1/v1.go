@@ -24,6 +24,7 @@ func SetupV1Routes(api fiber.Router, db *gorm.DB, cfg *config.Config, cronSvc *s
 
 	// Public routes
 	SetupAuthRoutes(v1, db, cfg, lRepo)
+	SetupPublicRoutes(v1, db, cfg)
 
 	// Protected routes
 	SetupUserRoutes(v1, db, cfg)
