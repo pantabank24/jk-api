@@ -3,6 +3,9 @@ package service
 import (
 	"encoding/json"
 	"strconv"
+	"time"
+
+	"jk-api/internal/entity"
 
 	"gorm.io/gorm"
 )
@@ -39,7 +42,19 @@ type SilverSellStatus struct {
 	// Pricing
 	PriceMode   string       `json:"price_mode"`   // feed|manual
 	ManualPrice float64      `json:"manual_price"` // buy price (baht/kg), used when price_mode=manual
-	Tiers       []SilverTier `json:"tiers"`        // weight-based pricing rules
+	// ManualPriceSetAt is when silver_manual_price was last saved (its config row's
+	// updated_at), so the UI can show "ราคานี้ถูกตั้งเมื่อ...". Nil if never set.
+	ManualPriceSetAt *time.Time   `json:"manual_price_set_at"`
+	Tiers            []SilverTier `json:"tiers"` // weight-based pricing rules
+}
+
+// configUpdatedAt returns when a config key was last written, or nil if unset.
+func configUpdatedAt(db *gorm.DB, key string) *time.Time {
+	var c entity.SystemConfig
+	if err := db.Where("key = ?", key).First(&c).Error; err == nil {
+		return &c.UpdatedAt
+	}
+	return nil
 }
 
 // parseSilverTiers decodes the silver_weight_tiers config JSON. On empty/invalid
@@ -80,13 +95,14 @@ func GetSilverSellStatus(db *gorm.DB) SilverSellStatus {
 	tiers := parseSilverTiers(configValue(db, "silver_weight_tiers", ""))
 
 	return SilverSellStatus{
-		Enabled:     enabled,
-		ShopOpen:    shopOpen,
-		IsOpen:      isOpen,
-		CloseTime:   closeTime,
-		Now:         nowHM,
-		PriceMode:   priceMode,
-		ManualPrice: manualPrice,
-		Tiers:       tiers,
+		Enabled:          enabled,
+		ShopOpen:         shopOpen,
+		IsOpen:           isOpen,
+		CloseTime:        closeTime,
+		Now:              nowHM,
+		PriceMode:        priceMode,
+		ManualPrice:      manualPrice,
+		ManualPriceSetAt: configUpdatedAt(db, "silver_manual_price"),
+		Tiers:            tiers,
 	}
 }
