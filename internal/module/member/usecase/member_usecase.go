@@ -281,8 +281,11 @@ func (u *memberUsecase) GetCreditTransactions(memberID uint, page, limit int) ([
 	if page < 1 {
 		page = 1
 	}
-	if limit < 1 || limit > 100 {
+	if limit < 1 {
 		limit = 20
+	}
+	if limit > 100 {
+		limit = 100
 	}
 	return u.memberRepo.GetCreditTransactions(memberID, page, limit)
 }
