@@ -42,6 +42,7 @@ func (r *salesScheduleRepository) Update(s *entity.SalesSchedule) error {
 		"close_time":           s.CloseTime,
 		"realtime_after_hours": s.RealtimeAfterHours,
 		"realtime_until":       s.RealtimeUntil,
+		"realtime_only":        s.RealtimeOnly,
 		"note":                 s.Note,
 	}).Error
 }

@@ -19,6 +19,7 @@ func SetupPublicRoutes(v1 fiber.Router, db *gorm.DB, cfg *config.Config) {
 	goldCtrl := goldPriceCtrl.NewGoldPriceController(
 		goldPriceRepo.NewGoldPriceRepository(db),
 		cfg.GoldRealtimeURL,
+		db,
 	)
 	metalCtrl := metalPriceCtrl.NewMetalPriceController(
 		metalPriceRepo.NewMetalPriceRepository(db),

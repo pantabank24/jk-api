@@ -10,19 +10,22 @@ import (
 
 	"jk-api/internal/entity"
 	"jk-api/internal/module/gold_price/repository"
+	"jk-api/internal/service"
 	"jk-api/pkg/goldprice"
 	"jk-api/pkg/response"
 
 	"github.com/gofiber/fiber/v2"
+	"gorm.io/gorm"
 )
 
 type GoldPriceController struct {
 	repo        repository.GoldPriceRepository
 	realtimeURL string
+	db          *gorm.DB
 }
 
-func NewGoldPriceController(repo repository.GoldPriceRepository, realtimeURL string) *GoldPriceController {
-	return &GoldPriceController{repo: repo, realtimeURL: realtimeURL}
+func NewGoldPriceController(repo repository.GoldPriceRepository, realtimeURL string, db *gorm.DB) *GoldPriceController {
+	return &GoldPriceController{repo: repo, realtimeURL: realtimeURL, db: db}
 }
 
 // GetRealtime proxies the latest real-time gold price from the tv-price-svc
@@ -42,6 +45,23 @@ func (ctrl *GoldPriceController) GetRealtime(c *fiber.Ctx) error {
 	var payload map[string]any
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return response.Success(c, "ข้อมูลราคาเรียลไทม์ผิดรูปแบบ", nil)
+	}
+
+	// The sidecar reports the market (spot + USD/THB); what the shop quotes on
+	// top of that is the shop's own policy, so it is applied here where the
+	// settings page can change it without redeploying the sidecar. Its own
+	// bar_* fields are overwritten and never surface to the frontend.
+	spot, okSpot := payload["spot"].(float64)
+	usdthb, okFX := payload["usdthb"].(float64)
+	if okSpot && okFX {
+		pricing := service.GetRealtimePricing(ctrl.db)
+		if mid, buy, sell := pricing.Quote(spot, usdthb); mid > 0 {
+			payload["bar_mid"] = math.Round(mid*100) / 100
+			payload["bar_buy"] = buy
+			payload["bar_sell"] = sell
+			payload["premium_thb"] = pricing.Premium
+			payload["spread_thb"] = pricing.Spread
+		}
 	}
 	return response.Success(c, "Realtime gold price", payload)
 }

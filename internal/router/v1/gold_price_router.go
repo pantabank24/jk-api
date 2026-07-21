@@ -12,7 +12,7 @@ import (
 
 func SetupGoldPriceRoutes(v1 fiber.Router, db *gorm.DB, cfg *config.Config) {
 	repo := goldPriceRepo.NewGoldPriceRepository(db)
-	ctrl := goldPriceCtrl.NewGoldPriceController(repo, cfg.GoldRealtimeURL)
+	ctrl := goldPriceCtrl.NewGoldPriceController(repo, cfg.GoldRealtimeURL, db)
 
 	gp := v1.Group("/gold-prices", middleware.AuthMiddleware(cfg))
 	{

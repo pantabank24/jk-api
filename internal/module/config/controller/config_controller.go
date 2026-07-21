@@ -1,6 +1,10 @@
 package controller
 
 import (
+	"fmt"
+	"strconv"
+	"strings"
+
 	"jk-api/internal/module/config/repository"
 	"jk-api/internal/service"
 	"jk-api/pkg/response"
@@ -63,6 +67,19 @@ type UpdateConfigRequest struct {
 	Value string `json:"value"`
 }
 
+// validateFloatRange rejects a value that is not a number or falls outside
+// [lo, hi]. Used for the config keys that reach live pricing.
+func validateFloatRange(value string, lo, hi float64) error {
+	v, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
+	if err != nil {
+		return err
+	}
+	if v < lo || v > hi {
+		return fmt.Errorf("out of range")
+	}
+	return nil
+}
+
 func (ctrl *ConfigController) Update(c *fiber.Ctx) error {
 	var req UpdateConfigRequest
 	if err := c.BodyParser(&req); err != nil {
@@ -77,6 +94,20 @@ func (ctrl *ConfigController) Update(c *fiber.Ctx) error {
 		}
 	}
 
+	// Real-time pricing feeds customer quotes directly, with no build step in
+	// between to catch a slip — so a stray zero is rejected here rather than
+	// shipped to every open screen.
+	switch req.Key {
+	case service.KeyRealtimePremium:
+		if err := validateFloatRange(req.Value, service.RealtimePremiumMin, service.RealtimePremiumMax); err != nil {
+			return response.BadRequest(c, "ค่าปรับราคาต้องเป็นตัวเลขระหว่าง -500 ถึง 500 บาท")
+		}
+	case service.KeyRealtimeSpread:
+		if err := validateFloatRange(req.Value, service.RealtimeSpreadMin, service.RealtimeSpreadMax); err != nil {
+			return response.BadRequest(c, "ส่วนต่างราคาต้องเป็นตัวเลขระหว่าง 0 ถึง 1000 บาท")
+		}
+	}
+
 	if err := ctrl.repo.Set(req.Key, req.Value); err != nil {
 		return response.InternalServerError(c, err.Error())
 	}
@@ -84,6 +115,12 @@ func (ctrl *ConfigController) Update(c *fiber.Ctx) error {
 	// Reload cron if cron-related config changed
 	if req.Key == "gold_price_cron" || req.Key == "gold_price_auto_fetch" {
 		ctrl.cronService.Reload()
+	}
+
+	// Drop the cached pricing so the change shows up on the next poll instead
+	// of waiting out the TTL.
+	if req.Key == service.KeyRealtimePremium || req.Key == service.KeyRealtimeSpread {
+		service.InvalidateRealtimePricing()
 	}
 
 	return response.Success(c, "Config updated", nil)

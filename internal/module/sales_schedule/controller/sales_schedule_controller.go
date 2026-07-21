@@ -38,6 +38,7 @@ type upsertRequest struct {
 	CloseTime          string     `json:"close_time"`
 	RealtimeAfterHours bool       `json:"realtime_after_hours"`
 	RealtimeUntil      string     `json:"realtime_until"` // HH:MM, '' = no limit
+	RealtimeOnly       bool       `json:"realtime_only"`  // realtime price 24h
 	Note               string     `json:"note"`
 }
 
@@ -61,6 +62,7 @@ func (ctrl *SalesScheduleController) Upsert(c *fiber.Ctx) error {
 		CloseTime:          defaultStr(req.CloseTime, "16:30"),
 		RealtimeAfterHours: req.RealtimeAfterHours,
 		RealtimeUntil:      req.RealtimeUntil,
+		RealtimeOnly:       req.RealtimeOnly,
 		Note:               req.Note,
 	}
 

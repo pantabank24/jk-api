@@ -20,10 +20,12 @@ func realtimeURL() string {
 	return "http://host.docker.internal:8000"
 }
 
+// realtimePayload is the part of the sidecar's response we price from. Its own
+// bar_buy/bar_sell are deliberately ignored: the shop's premium and spread live
+// in the config table so they can be retuned without redeploying the sidecar.
 type realtimePayload struct {
-	BarBuy  *float64 `json:"bar_buy"`
-	BarSell *float64 `json:"bar_sell"`
-	Spot    *float64 `json:"spot"`
+	Spot   *float64 `json:"spot"`
+	USDTHB *float64 `json:"usdthb"`
 }
 
 // SnapshotRealtimeRound fetches the current real-time gold price from the
@@ -42,16 +44,23 @@ func SnapshotRealtimeRound(db *gorm.DB) (string, *uint) {
 		return CurrentRound(db)
 	}
 	var p realtimePayload
-	if err := json.Unmarshal(body, &p); err != nil || p.BarBuy == nil || p.BarSell == nil {
+	if err := json.Unmarshal(body, &p); err != nil || p.Spot == nil || p.USDTHB == nil {
+		return CurrentRound(db)
+	}
+
+	// Price the snapshot through the same policy the live screen shows, so the
+	// number locked onto the document is the one the customer was quoted.
+	_, buy, sell := GetRealtimePricing(db).Quote(*p.Spot, *p.USDTHB)
+	if buy <= 0 || sell <= 0 {
 		return CurrentRound(db)
 	}
 
 	now := bangkokNow()
 	gp := entity.GoldPrice{
-		BarBuy:       *p.BarBuy,
-		BarSell:      *p.BarSell,
-		OrnamentBuy:  *p.BarBuy,  // sidecar only derives bar pricing for now
-		OrnamentSell: *p.BarSell,
+		BarBuy:       buy,
+		BarSell:      sell,
+		OrnamentBuy:  buy, // sidecar only derives bar pricing for now
+		OrnamentSell: sell,
 		GoldDate:     now.Format("2006-01-02"),
 		GoldTime:     now.Format("15:04:05"),
 		GoldRound:    "realtime",
