@@ -22,6 +22,8 @@ func SetupBillRoutes(v1 fiber.Router, db *gorm.DB, cfg *config.Config) {
 	bills := v1.Group("/bills", middleware.AuthMiddleware(cfg))
 	{
 		bills.Get("/unfinished-count", middleware.RequirePermission(db, "bills.read"), ctrl.GetUnfinishedCount)
+		// Registered before "/:id" — fiber matches routes in order.
+		bills.Get("/summary",          middleware.RequirePermission(db, "bills.read"), ctrl.GetBillsSummary)
 		bills.Get("/balance",          middleware.RequirePermission(db, "bills.read"), ctrl.GetBillBalance)
 		bills.Get("/sell-customers",   middleware.RequirePermission(db, "bills.sell"), ctrl.ListSellCustomers)
 		bills.Get("/",        middleware.RequirePermission(db, "bills.read"),    ctrl.GetAllBills)

@@ -15,11 +15,16 @@ import (
 // quotations never leak into each other.
 type BillRepository interface {
 	Create(bill *entity.Quotation) error
-	FindAll(storeID *uint, branchID *uint, createdBy *uint, status *int, page, limit int, search string) ([]entity.Quotation, int64, error)
+	// FindAll lists one page of bills matching the filter.
+	FindAll(f BillFilter, page, limit int) ([]entity.Quotation, int64, error)
+	// Summarize aggregates EVERY bill matching the filter, not just the current
+	// page — the list's overview cards must not change as the user pages through.
+	Summarize(f BillFilter, groupIssued bool) (BillSummary, error)
 	FindByID(id uint) (*entity.Quotation, error)
-	// FindPendingByCreator returns a customer's open "รอออกบิล" bill, if any, so new
-	// sells accumulate into it instead of creating separate bills.
-	FindPendingByCreator(createdBy uint) (*entity.Quotation, error)
+	// FindPendingByCreator returns a customer's open "รอออกบิล" bill for the given
+	// metal, if any, so new sells accumulate into it instead of creating separate
+	// bills. Bills are single-metal, so selling silver never lands in a gold bill.
+	FindPendingByCreator(createdBy uint, metal string) (*entity.Quotation, error)
 	AppendItems(billID uint, items []entity.QuotationItem) error
 	Update(bill *entity.Quotation) error
 	ReplaceItems(billID uint, items []entity.QuotationItem) error
@@ -33,7 +38,7 @@ type BillRepository interface {
 	RevertIssuance(id uint) error
 	GenerateCode() (string, error)
 	AddImages(billID uint, urls []string) error
-	CountUnfinished(storeID *uint, branchID *uint, createdBy *uint) (int64, error)
+	CountUnfinished(storeID *uint, branchID *uint, createdBy *uint) (UnfinishedCounts, error)
 	// PartialDeliver accumulates processed_weight and processed_amount for a bill
 	// when the master records a partial delivery without issuing the full quotation.
 	PartialDeliver(billID uint, weight, amount float64) (*entity.Quotation, error)
@@ -46,6 +51,43 @@ type BillRepository interface {
 	// billIDs empty = all completed bills in scope; a non-empty selection is
 	// expanded to whole issue-groups (bills sharing issued_quotation_id).
 	ClearBills(storeID *uint, billIDs []uint) (int64, error)
+}
+
+// BillFilter is the shared "which bills" question behind the list and its
+// overview, so a paged list and its totals can never drift apart.
+type BillFilter struct {
+	StoreID   *uint
+	BranchID  *uint
+	CreatedBy *uint
+	Status    *int
+	// ExcludeStatuses drops statuses from the result — the customer's รายการขาย
+	// hides สำเร็จ/เคลียร์แล้ว (those live in บิลทั้งหมด). Ignored when Status is set.
+	ExcludeStatuses []int
+	Metal           *string
+	Search          string
+}
+
+// BillSummary is the list's overview strip, aggregated over every matching bill.
+type BillSummary struct {
+	// Count of displayed rows: issue-groups for staff, individual bills for the
+	// customer's own list (mirrors how each list renders).
+	Count int64 `json:"count"`
+	// RawAmount is what the customers submitted (Σ total_amount).
+	RawAmount float64 `json:"raw_amount"`
+	// Weight/Amount are the submitted items — same basis as RawAmount, so
+	// Amount ÷ Weight is the average price of the sales RawAmount reports.
+	Weight float64 `json:"weight"`
+	Amount float64 `json:"amount"`
+	// PendingClearWeight is the สำเร็จ (12) slice of Weight — waiting to be cleared.
+	PendingClearWeight float64 `json:"pending_clear_weight"`
+}
+
+// UnfinishedCounts is the sidebar badge split: one number per list page plus the
+// combined total (kept for callers that only care that anything is outstanding).
+type UnfinishedCounts struct {
+	Total  int64 `json:"count"`
+	Gold   int64 `json:"gold"`
+	Silver int64 `json:"silver"`
 }
 
 type billRepository struct {
@@ -61,9 +103,10 @@ func (r *billRepository) Create(bill *entity.Quotation) error {
 	return r.db.Create(bill).Error
 }
 
-func (r *billRepository) FindPendingByCreator(createdBy uint) (*entity.Quotation, error) {
+func (r *billRepository) FindPendingByCreator(createdBy uint, metal string) (*entity.Quotation, error) {
 	var bill entity.Quotation
-	err := r.db.Where("is_bill = ? AND created_by = ? AND status = ?", true, createdBy, StatusPendingIssue).
+	err := r.db.Where("is_bill = ? AND created_by = ? AND status = ? AND metal = ?",
+		true, createdBy, StatusPendingIssue, metal).
 		Order("id DESC").First(&bill).Error
 	if err != nil {
 		return nil, err
@@ -81,27 +124,38 @@ func (r *billRepository) AppendItems(billID uint, items []entity.QuotationItem) 
 	return r.db.Create(&items).Error
 }
 
-func (r *billRepository) FindAll(storeID *uint, branchID *uint, createdBy *uint, status *int, page, limit int, search string) ([]entity.Quotation, int64, error) {
+// scope applies a BillFilter to a fresh bills query. Every read that has to agree
+// with the list (the list itself, its overview) starts here.
+func (r *billRepository) scope(f BillFilter) *gorm.DB {
+	query := r.db.Model(&entity.Quotation{}).Where("quotations.is_bill = ?", true)
+	if f.StoreID != nil {
+		query = query.Where("quotations.store_id = ?", *f.StoreID)
+	}
+	if f.BranchID != nil {
+		query = query.Where("quotations.branch_id = ?", *f.BranchID)
+	}
+	if f.CreatedBy != nil {
+		query = query.Where("quotations.created_by = ?", *f.CreatedBy)
+	}
+	if f.Status != nil {
+		query = query.Where("quotations.status = ?", *f.Status)
+	} else if len(f.ExcludeStatuses) > 0 {
+		query = query.Where("quotations.status NOT IN ?", f.ExcludeStatuses)
+	}
+	if f.Metal != nil {
+		query = query.Where("quotations.metal = ?", *f.Metal)
+	}
+	if f.Search != "" {
+		query = query.Where("quotations.code ILIKE ?", "%"+f.Search+"%")
+	}
+	return query
+}
+
+func (r *billRepository) FindAll(f BillFilter, page, limit int) ([]entity.Quotation, int64, error) {
 	var bills []entity.Quotation
 	var total int64
 
-	query := r.db.Model(&entity.Quotation{}).Where("quotations.is_bill = ?", true)
-	if storeID != nil {
-		query = query.Where("quotations.store_id = ?", *storeID)
-	}
-	if branchID != nil {
-		query = query.Where("quotations.branch_id = ?", *branchID)
-	}
-	if createdBy != nil {
-		query = query.Where("quotations.created_by = ?", *createdBy)
-	}
-	if status != nil {
-		query = query.Where("quotations.status = ?", *status)
-	}
-	if search != "" {
-		query = query.Where("quotations.code ILIKE ?", "%"+search+"%")
-	}
-
+	query := r.scope(f)
 	query.Count(&total)
 	offset := (page - 1) * limit
 	// IssuedQuotation (code + total) lets the list show the issued quotation a bill
@@ -110,6 +164,64 @@ func (r *billRepository) FindAll(storeID *uint, branchID *uint, createdBy *uint,
 		Preload("Store").Preload("Branch").Preload("IssuedQuotation").
 		Offset(offset).Limit(limit).Order("quotations.id DESC").Find(&bills).Error
 	return bills, total, err
+}
+
+// Summarize aggregates the whole filtered set for the overview cards.
+// groupIssued mirrors the list: staff see bills issued together as ONE row, the
+// customer's own list shows each bill separately.
+func (r *billRepository) Summarize(f BillFilter, groupIssued bool) (BillSummary, error) {
+	var sum BillSummary
+
+	countExpr := "COUNT(*)"
+	if groupIssued {
+		countExpr = "COUNT(DISTINCT COALESCE(quotations.issued_quotation_id, quotations.id))"
+	}
+	var head struct {
+		Count     int64
+		RawAmount float64
+	}
+	if err := r.scope(f).
+		Select(countExpr + " AS count, COALESCE(SUM(quotations.total_amount), 0) AS raw_amount").
+		Scan(&head).Error; err != nil {
+		return sum, err
+	}
+	sum.Count, sum.RawAmount = head.Count, head.RawAmount
+
+	// Weight/amount come from what the customers submitted — the same basis as
+	// RawAmount above, so ราคาเฉลี่ย (amount ÷ weight) describes the sales the
+	// ยอดขายรวม card is showing. The master's re-assessed figures belong to the
+	// individual bill, not to this strip.
+	weigh := func(q *gorm.DB) (float64, float64, error) {
+		items := r.db.Model(&entity.QuotationItem{}).
+			Where("quotation_id IN (?)", q.Select("quotations.id"))
+		// A single-metal list must not pick up the stray other-metal lines a legacy
+		// mixed bill still carries.
+		if f.Metal != nil {
+			items = items.Where("COALESCE(metal, 'gold') = ?", *f.Metal)
+		}
+		var agg struct {
+			Weight float64
+			Amount float64
+		}
+		err := items.Select("COALESCE(SUM(weight), 0) AS weight, COALESCE(SUM(total), 0) AS amount").
+			Scan(&agg).Error
+		return agg.Weight, agg.Amount, err
+	}
+
+	weight, amount, err := weigh(r.scope(f))
+	if err != nil {
+		return sum, err
+	}
+	sum.Weight, sum.Amount = weight, amount
+
+	// The สำเร็จ slice — what is sitting there waiting for เคลียร์บิล.
+	pending, _, err := weigh(r.scope(f).Where("quotations.status = ?", StatusCompleted))
+	if err != nil {
+		return sum, err
+	}
+	sum.PendingClearWeight = pending
+
+	return sum, nil
 }
 
 func (r *billRepository) FindByID(id uint) (*entity.Quotation, error) {
@@ -345,9 +457,10 @@ func (r *billRepository) PartialDeliver(billID uint, weight, amount float64) (*e
 }
 
 // CountUnfinished counts bills that are not yet completed/cancelled
-// (status 10 = waiting to issue, 11 = waiting to review).
-func (r *billRepository) CountUnfinished(storeID *uint, branchID *uint, createdBy *uint) (int64, error) {
-	var count int64
+// (status 10 = waiting to issue, 11 = waiting to review), split per metal so the
+// รายการขายทอง / รายการขายเงิน menu entries each get their own badge.
+func (r *billRepository) CountUnfinished(storeID *uint, branchID *uint, createdBy *uint) (UnfinishedCounts, error) {
+	var counts UnfinishedCounts
 	query := r.db.Model(&entity.Quotation{}).
 		Where("is_bill = ?", true).
 		Where("status IN ?", []int{StatusPendingIssue, StatusPendingReview})
@@ -360,8 +473,24 @@ func (r *billRepository) CountUnfinished(storeID *uint, branchID *uint, createdB
 	if createdBy != nil {
 		query = query.Where("created_by = ?", *createdBy)
 	}
-	err := query.Count(&count).Error
-	return count, err
+
+	var rows []struct {
+		Metal string
+		Count int64
+	}
+	if err := query.Select("metal, COUNT(*) AS count").Group("metal").Scan(&rows).Error; err != nil {
+		return counts, err
+	}
+	for _, row := range rows {
+		counts.Total += row.Count
+		// Legacy rows predating the metal column read as gold (see migration 85).
+		if row.Metal == "" || row.Metal == "gold" {
+			counts.Gold += row.Count
+		} else {
+			counts.Silver += row.Count
+		}
+	}
+	return counts, nil
 }
 
 // Bill status values (kept distinct from staff quotation statuses 0/1/2).

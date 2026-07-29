@@ -11,6 +11,7 @@ import (
 
 	"jk-api/internal/entity"
 	"jk-api/internal/middleware"
+	"jk-api/internal/module/bill/repository"
 	"jk-api/internal/module/bill/usecase"
 	"jk-api/internal/service"
 	"jk-api/pkg/linenotify"
@@ -68,6 +69,15 @@ func (ctrl *BillController) scope(c *fiber.Ctx) (*uint, *uint, *uint) {
 	default: // employee — locked to store + branch
 		return middleware.GetStoreID(c), middleware.GetBranchID(c), queryCreatedBy(c)
 	}
+}
+
+// queryMetal parses the optional metal query param used by the split list pages
+// (รายการขายทอง / รายการขายเงิน). Absent = every metal, as before.
+func queryMetal(c *fiber.Ctx) *string {
+	if m := strings.TrimSpace(c.Query("metal")); m != "" {
+		return &m
+	}
+	return nil
 }
 
 // queryCreatedBy parses the optional created_by query param (a customer's user
@@ -217,24 +227,53 @@ func (ctrl *BillController) ListSellCustomers(c *fiber.Ctx) error {
 	return response.Success(c, "ok", customers)
 }
 
+// billFilter reads the query params shared by the list and its summary, so a page
+// of results and the totals shown above it always describe the same set.
+func (ctrl *BillController) billFilter(c *fiber.Ctx) repository.BillFilter {
+	storeID, branchID, createdBy := ctrl.scope(c)
+	f := repository.BillFilter{
+		StoreID:   storeID,
+		BranchID:  branchID,
+		CreatedBy: createdBy,
+		Metal:     queryMetal(c),
+		Search:    c.Query("search", ""),
+	}
+	if s := c.Query("status"); s != "" {
+		st, _ := strconv.Atoi(s)
+		f.Status = &st
+	}
+	// exclude_status=12,14 — the customer's รายการขาย hides finished bills, which
+	// has to happen server-side or a page of results arrives half-empty.
+	for _, part := range strings.Split(c.Query("exclude_status"), ",") {
+		if st, err := strconv.Atoi(strings.TrimSpace(part)); err == nil {
+			f.ExcludeStatuses = append(f.ExcludeStatuses, st)
+		}
+	}
+	return f
+}
+
 func (ctrl *BillController) GetAllBills(c *fiber.Ctx) error {
 	page, _ := strconv.Atoi(c.Query("page", "1"))
 	limit, _ := strconv.Atoi(c.Query("limit", "10"))
-	search := c.Query("search", "")
 
-	storeID, branchID, createdBy := ctrl.scope(c)
-
-	var status *int
-	if s := c.Query("status"); s != "" {
-		st, _ := strconv.Atoi(s)
-		status = &st
-	}
-
-	bills, total, err := ctrl.billUsecase.GetAllBills(storeID, branchID, createdBy, status, page, limit, search)
+	bills, total, err := ctrl.billUsecase.GetAllBills(ctrl.billFilter(c), page, limit)
 	if err != nil {
 		return response.InternalServerError(c, err.Error())
 	}
 	return response.Paginated(c, "Bills retrieved", bills, page, limit, total)
+}
+
+// GetBillsSummary totals every bill matching the list's filters — the overview
+// strip stays put while the user pages through the list underneath it.
+func (ctrl *BillController) GetBillsSummary(c *fiber.Ctx) error {
+	// Staff lists collapse bills issued together into one row; the customer's own
+	// list shows each bill. The count must follow whichever the caller renders.
+	groupIssued := middleware.GetRoleName(c) != "customer"
+	summary, err := ctrl.billUsecase.SummarizeBills(ctrl.billFilter(c), groupIssued)
+	if err != nil {
+		return response.InternalServerError(c, err.Error())
+	}
+	return response.Success(c, "ok", summary)
 }
 
 func (ctrl *BillController) GetBillByID(c *fiber.Ctx) error {
@@ -249,13 +288,19 @@ func (ctrl *BillController) GetBillByID(c *fiber.Ctx) error {
 	return response.Success(c, "Bill retrieved", bill)
 }
 
+// GetUnfinishedCount feeds the sidebar badges: a combined total plus the per-metal
+// split, one for each of the รายการขายทอง / รายการขายเงิน entries.
 func (ctrl *BillController) GetUnfinishedCount(c *fiber.Ctx) error {
 	storeID, branchID, createdBy := ctrl.scope(c)
-	count, err := ctrl.billUsecase.CountUnfinished(storeID, branchID, createdBy)
+	counts, err := ctrl.billUsecase.CountUnfinished(storeID, branchID, createdBy)
 	if err != nil {
 		return response.InternalServerError(c, err.Error())
 	}
-	return response.Success(c, "ok", fiber.Map{"count": count})
+	return response.Success(c, "ok", fiber.Map{
+		"count":  counts.Total,
+		"gold":   counts.Gold,
+		"silver": counts.Silver,
+	})
 }
 
 func (ctrl *BillController) IssueBill(c *fiber.Ctx) error {

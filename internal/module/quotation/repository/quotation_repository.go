@@ -173,6 +173,8 @@ func (r *quotationRepository) SplitBillItems(billID uint, itemIDs []uint) (uint,
 			Code:        fmt.Sprintf("BILL%04d", count+1),
 			Status:      10, // รอออกบิล — caller marks it issued right after
 			IsBill:      true,
+			// Bills are single-metal; the split half must stay on the same list.
+			Metal:       bill.Metal,
 			GoldRound:   bill.GoldRound,
 			GoldPriceID: bill.GoldPriceID,
 		}

@@ -20,6 +20,10 @@ type Quotation struct {
 	Code         string  `json:"code"          gorm:"type:varchar(20);uniqueIndex;not null"`
 	Status       int     `json:"status"        gorm:"default:0;index"`
 	IsBill       bool    `json:"is_bill"       gorm:"default:false;index"`
+	// Metal tags the whole document (gold|silver|…). Bills are single-metal: a new
+	// sell only accumulates into an open "รอออกบิล" bill of the SAME metal, and the
+	// รายการขายทอง / รายการขายเงิน lists filter on this. Legacy mixed bills read 'gold'.
+	Metal        string  `json:"metal"         gorm:"type:varchar(20);default:'gold';index"`
 	Note         string  `json:"note"          gorm:"type:text;default:''"`
 	RejectReason string  `json:"reject_reason" gorm:"type:text;default:''"`
 	TotalAmount  float64 `json:"total_amount"  gorm:"type:decimal(12,2);default:0"`

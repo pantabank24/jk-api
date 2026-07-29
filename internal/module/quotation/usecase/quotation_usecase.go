@@ -127,6 +127,22 @@ func itemMetal(m string) string {
 	return m
 }
 
+// documentMetal tags the whole document with its items' metal, but only when they
+// all agree — a mixed quotation reads as gold, matching migration 85's backfill.
+func documentMetal(items []entity.QuotationItem) string {
+	metal := "gold"
+	for i, item := range items {
+		if i == 0 {
+			metal = itemMetal(item.Metal)
+			continue
+		}
+		if itemMetal(item.Metal) != metal {
+			return "gold"
+		}
+	}
+	return metal
+}
+
 type UpdateStatusRequest struct {
 	Status       int    `json:"status"`
 	Note         string `json:"note"`
@@ -220,6 +236,7 @@ func (u *quotationUsecase) CreateQuotation(req *CreateQuotationRequest) (*entity
 		CreatedBy:     &createdBy,
 		Code:          code,
 		Status:        1, // approved immediately on creation
+		Metal:         documentMetal(items),
 		Note:          req.Note,
 		TotalAmount:   totalAmount,
 		GoldRound:     req.GoldRound,

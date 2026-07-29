@@ -13,7 +13,10 @@ import (
 
 type BillUsecase interface {
 	CreateBill(req *CreateBillRequest) (*entity.Quotation, error)
-	GetAllBills(storeID *uint, branchID *uint, createdBy *uint, status *int, page, limit int, search string) ([]entity.Quotation, int64, error)
+	GetAllBills(f repository.BillFilter, page, limit int) ([]entity.Quotation, int64, error)
+	// SummarizeBills totals the whole filtered set for the list's overview cards
+	// (which must not change as the user pages through).
+	SummarizeBills(f repository.BillFilter, groupIssued bool) (repository.BillSummary, error)
 	GetBillByID(id uint) (*entity.Quotation, error)
 	IssueBill(id uint, req *UpdateBillStatusRequest) (*entity.Quotation, error)
 	ApproveBill(id uint, req *UpdateBillStatusRequest) (*entity.Quotation, error)
@@ -25,7 +28,7 @@ type BillUsecase interface {
 	RemoveBillItem(billID, itemID uint) (*entity.Quotation, bool, error)
 	DeleteBill(id uint) error
 	AddImages(id uint, urls []string) error
-	CountUnfinished(storeID *uint, branchID *uint, createdBy *uint) (int64, error)
+	CountUnfinished(storeID *uint, branchID *uint, createdBy *uint) (repository.UnfinishedCounts, error)
 	PartialDeliverBill(id uint, req *PartialDeliverRequest) (*entity.Quotation, error)
 	GetBillBalance(userID uint) (repository.BalanceSummary, []entity.BillBalance, error)
 	GetDeliveryLogs(billID uint) ([]entity.BillDeliveryLog, error)
@@ -52,9 +55,9 @@ type CreateBillRequest struct {
 type CreateBillItemRequest struct {
 	TypeID   string  `json:"type_id"`
 	TypeName string  `json:"type_name"`
-	// Metal tags the item (gold|silver|platinum|palladium); empty = gold.
-	// Customer bills are gold-only today, but the column keeps items consistent
-	// with quotation items.
+	// Metal tags the item (gold|silver|platinum|palladium); empty = gold. It also
+	// decides which bill the item lands in — bills are single-metal, so items of
+	// different metals in one payload are split into a bill each.
 	Metal    string  `json:"metal"`
 	Plus     float64 `json:"plus"`
 	Price    float64 `json:"price"`
@@ -107,14 +110,39 @@ func (u *billUsecase) CreateBill(req *CreateBillRequest) (*entity.Quotation, err
 		return nil, errors.New("ต้องมีรายการอย่างน้อย 1 รายการ")
 	}
 
-	var totalAmount float64
-	var items []entity.QuotationItem
-	for _, item := range req.Items {
-		totalAmount += item.Total
-		items = append(items, entity.QuotationItem{
+	// Bills are single-metal, so a payload carrying more than one metal is split
+	// into one bill per metal (the sell screens post a single item at a time, so
+	// in practice there is exactly one group).
+	order, byMetal := groupItemsByMetal(req.Items)
+
+	var first *entity.Quotation
+	for _, metal := range order {
+		bill, err := u.upsertPendingBill(req, metal, byMetal[metal])
+		if err != nil {
+			return nil, err
+		}
+		if first == nil {
+			first = bill
+		}
+	}
+	return first, nil
+}
+
+// groupItemsByMetal buckets the payload's items by their (normalised) metal and
+// returns the metals in the order they first appear, so the response is the bill
+// for the first item the customer sent.
+func groupItemsByMetal(reqItems []CreateBillItemRequest) ([]string, map[string][]entity.QuotationItem) {
+	order := []string{}
+	byMetal := map[string][]entity.QuotationItem{}
+	for _, item := range reqItems {
+		metal := billItemMetal(item.Metal)
+		if _, seen := byMetal[metal]; !seen {
+			order = append(order, metal)
+		}
+		byMetal[metal] = append(byMetal[metal], entity.QuotationItem{
 			TypeID:   item.TypeID,
 			TypeName: item.TypeName,
-			Metal:    billItemMetal(item.Metal),
+			Metal:    metal,
 			Plus:     item.Plus,
 			Price:    item.Price,
 			Percent:  item.Percent,
@@ -123,16 +151,37 @@ func (u *billUsecase) CreateBill(req *CreateBillRequest) (*entity.Quotation, err
 			Total:    item.Total,
 		})
 	}
+	return order, byMetal
+}
 
-	// Accumulate into the customer's open "รอออกบิล" bill if one exists, so all
-	// pending sells are combined from the start (no separate bills).
-	if existing, err := u.billRepo.FindPendingByCreator(req.CreatedByUserID); err == nil && existing != nil {
+// upsertPendingBill appends the items to the customer's open "รอออกบิล" bill of
+// the SAME metal, or starts a new bill when they have none. Selling silver while
+// a gold bill is still pending therefore opens a separate silver bill.
+func (u *billUsecase) upsertPendingBill(req *CreateBillRequest, metal string, items []entity.QuotationItem) (*entity.Quotation, error) {
+	var totalAmount float64
+	for _, item := range items {
+		totalAmount += item.Total
+	}
+
+	if existing, err := u.billRepo.FindPendingByCreator(req.CreatedByUserID, metal); err == nil && existing != nil {
 		if err := u.billRepo.AppendItems(existing.ID, items); err != nil {
 			return nil, err
 		}
 		existing.TotalAmount += totalAmount
 		if err := u.billRepo.Update(existing); err != nil {
 			return nil, err
+		}
+		// The bill keeps its original code and created_at, so without this the
+		// customer gets no sign that the sell landed (staff selling on their
+		// behalf especially).
+		if existing.CreatedBy != nil {
+			_ = u.notifRepo.Create(&entity.Notification{
+				UserID: *existing.CreatedBy,
+				Type:   "bill_updated",
+				Title:  "เพิ่มรายการขายแล้ว",
+				Body: fmt.Sprintf("เพิ่ม %d รายการ (%s) เข้าบิล %s แล้ว ยอดรวม %s บาท",
+					len(items), metalLabel(metal), existing.Code, formatAmount(existing.TotalAmount)),
+			})
 		}
 		return u.billRepo.FindByID(existing.ID)
 	}
@@ -149,6 +198,7 @@ func (u *billUsecase) CreateBill(req *CreateBillRequest) (*entity.Quotation, err
 		CreatedBy:   &createdBy,
 		Code:        code,
 		Status:      repository.StatusPendingIssue, // รอออกบิล
+		Metal:       metal,
 		Note:        req.Note,
 		TotalAmount: totalAmount,
 		GoldRound:   req.GoldRound,
@@ -166,21 +216,60 @@ func (u *billUsecase) CreateBill(req *CreateBillRequest) (*entity.Quotation, err
 			UserID: *bill.CreatedBy,
 			Type:   "bill_created",
 			Title:  "สร้างบิลสำเร็จ",
-			Body:   fmt.Sprintf("บิล %s ถูกสร้างแล้ว สถานะ: รอออกบิล", bill.Code),
+			Body:   fmt.Sprintf("บิล%s %s ถูกสร้างแล้ว สถานะ: รอออกบิล", metalLabel(metal), bill.Code),
 		})
 	}
 
 	return u.billRepo.FindByID(bill.ID)
 }
 
-func (u *billUsecase) GetAllBills(storeID *uint, branchID *uint, createdBy *uint, status *int, page, limit int, search string) ([]entity.Quotation, int64, error) {
+// uniformMetal tags a bill with its items' metal, but only when they all agree —
+// a mixed set reads as gold, matching migration 85's backfill.
+func uniformMetal(items []entity.QuotationItem) string {
+	metal := "gold"
+	for i, item := range items {
+		if i == 0 {
+			metal = billItemMetal(item.Metal)
+			continue
+		}
+		if billItemMetal(item.Metal) != metal {
+			return "gold"
+		}
+	}
+	return metal
+}
+
+// metalLabel is the Thai word used in customer-facing notifications.
+func metalLabel(metal string) string {
+	switch metal {
+	case "gold":
+		return "ทอง"
+	case "silver":
+		return "เงิน"
+	case "platinum":
+		return "แพลทินัม"
+	case "palladium":
+		return "แพลเลเดียม"
+	}
+	return metal
+}
+
+func formatAmount(v float64) string {
+	return fmt.Sprintf("%.2f", v)
+}
+
+func (u *billUsecase) GetAllBills(f repository.BillFilter, page, limit int) ([]entity.Quotation, int64, error) {
 	if page < 1 {
 		page = 1
 	}
 	if limit < 1 || limit > 100 {
 		limit = 10
 	}
-	return u.billRepo.FindAll(storeID, branchID, createdBy, status, page, limit, search)
+	return u.billRepo.FindAll(f, page, limit)
+}
+
+func (u *billUsecase) SummarizeBills(f repository.BillFilter, groupIssued bool) (repository.BillSummary, error) {
+	return u.billRepo.Summarize(f, groupIssued)
 }
 
 func (u *billUsecase) GetBillByID(id uint) (*entity.Quotation, error) {
@@ -306,6 +395,9 @@ func (u *billUsecase) UpdateBill(id uint, req *UpdateBillRequest) (*entity.Quota
 			})
 		}
 		bill.TotalAmount = totalAmount
+		// Items were replaced wholesale, so re-derive which list the bill belongs
+		// to (a mixed edit keeps it on the gold list — see migration 85).
+		bill.Metal = uniformMetal(items)
 		if err := u.billRepo.ReplaceItems(bill.ID, items); err != nil {
 			return nil, err
 		}
@@ -359,7 +451,7 @@ func (u *billUsecase) AddImages(id uint, urls []string) error {
 	return u.billRepo.AddImages(id, urls)
 }
 
-func (u *billUsecase) CountUnfinished(storeID *uint, branchID *uint, createdBy *uint) (int64, error) {
+func (u *billUsecase) CountUnfinished(storeID *uint, branchID *uint, createdBy *uint) (repository.UnfinishedCounts, error) {
 	return u.billRepo.CountUnfinished(storeID, branchID, createdBy)
 }
 
