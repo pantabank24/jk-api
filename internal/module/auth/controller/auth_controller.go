@@ -74,7 +74,11 @@ func (ctrl *AuthController) UpdateProfile(c *fiber.Ctx) error {
 		return response.BadRequest(c, "Invalid request body")
 	}
 
-	result, err := ctrl.authUsecase.UpdateProfile(userID, &req)
+	// A customer's email is their issued login — read-only to them (the form
+	// disables it); staff may still change their own.
+	allowEmailChange := middleware.GetRoleName(c) != "customer"
+
+	result, err := ctrl.authUsecase.UpdateProfile(userID, &req, allowEmailChange)
 	if err != nil {
 		return response.BadRequest(c, err.Error())
 	}

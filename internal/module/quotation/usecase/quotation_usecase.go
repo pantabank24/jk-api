@@ -160,6 +160,12 @@ type UpdateQuotationRequest struct {
 	// (edits that don't touch the ชำระโดย section must not clear it).
 	PaymentMethod *string                      `json:"payment_method"`
 	Items         []CreateQuotationItemRequest `json:"items"`
+	// Page1Items replaces the printed page-1 breakdown whenever Items is sent.
+	// Page 1 prints from this snapshot in preference to Items, so leaving it at
+	// its creation-time value would keep showing the pre-edit prices under a
+	// total that has moved. Omitting it clears the snapshot, and page 1 falls
+	// back to the edited Items — never to stale numbers.
+	Page1Items json.RawMessage `json:"page1_items"`
 	// AdjustCredits, when true, reconciles the creator's credit balance by the
 	// change in total (charging more / refunding) and logs a credit transaction.
 	// Only applies when a master edits and the creator's role uses credits.
@@ -518,6 +524,10 @@ func (u *quotationUsecase) UpdateQuotation(id uint, req *UpdateQuotationRequest,
 			})
 		}
 		quotation.TotalAmount = totalAmount
+		// The page-1 snapshot describes these items, so it moves with them (nil
+		// clears it and page 1 prints the items themselves). Keeping the old one
+		// would print the pre-edit lines under the new total.
+		quotation.Page1Items = req.Page1Items
 		if err := u.quotationRepo.ReplaceItems(quotation.ID, items); err != nil {
 			return nil, err
 		}

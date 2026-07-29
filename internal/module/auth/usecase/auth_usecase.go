@@ -13,7 +13,7 @@ type AuthUsecase interface {
 	Login(req *LoginRequest) (*LoginResponse, error)
 	GetMe(userID uint) (*MeResponse, error)
 	RefreshToken(userID uint) (*TokenResponse, error)
-	UpdateProfile(userID uint, req *UpdateProfileRequest) (*MeResponse, error)
+	UpdateProfile(userID uint, req *UpdateProfileRequest, allowEmailChange bool) (*MeResponse, error)
 	ChangePassword(userID uint, req *ChangePasswordRequest) error
 	UpdateAvatar(userID uint, path string) (*MeResponse, error)
 }
@@ -44,6 +44,28 @@ type UpdateProfileRequest struct {
 	Name  string `json:"name"`
 	Email string `json:"email"`
 	Phone string `json:"phone"`
+	// The rest is what a customer keeps about themselves — the same fields the
+	// shop edits on PUT /customers/:id. They print on the receipt (address, tax
+	// id) and are paid out to (bank), so a customer maintaining their own record
+	// is the point. Pointers: a client that doesn't manage a field (the staff
+	// profile form) simply omits it and the stored value is left alone.
+	StoreName *string `json:"store_name"`
+	Address   *string `json:"address"`
+	TaxID     *string `json:"tax_id"`
+	// BankID uses 0 for "ไม่ระบุ" and is normalised to NULL, same as customers.
+	BankID          *uint   `json:"bank_id"`
+	BankAccountNo   *string `json:"bank_account_no"`
+	BankAccountName *string `json:"bank_account_name"`
+}
+
+// normalizeBankID maps "no bank" (0, what an empty <Select> submits) to a NULL
+// bank_id so it is never written as a real foreign key. Mirrors the customer
+// module's rule of the same name.
+func normalizeBankID(id *uint) *uint {
+	if id == nil || *id == 0 {
+		return nil
+	}
+	return id
 }
 
 type ChangePasswordRequest struct {
@@ -137,27 +159,52 @@ func (u *authUsecase) GetMe(userID uint) (*MeResponse, error) {
 	}, nil
 }
 
-func (u *authUsecase) UpdateProfile(userID uint, req *UpdateProfileRequest) (*MeResponse, error) {
+// UpdateProfile saves a user's own record. allowEmailChange is false for
+// customers: their email is the login the shop issued them, so it is theirs to
+// read but not to change — they ask the shop instead. Enforced here and not only
+// by disabling the field, since a disabled input is no barrier to a direct call.
+func (u *authUsecase) UpdateProfile(userID uint, req *UpdateProfileRequest, allowEmailChange bool) (*MeResponse, error) {
 	if strings.TrimSpace(req.Name) == "" {
 		return nil, errors.New("name is required")
-	}
-	if strings.TrimSpace(req.Email) == "" {
-		return nil, errors.New("email is required")
-	}
-
-	// Ensure the email isn't taken by another account.
-	exists, err := u.authRepo.EmailExistsForOtherUser(req.Email, userID)
-	if err != nil {
-		return nil, errors.New("failed to validate email")
-	}
-	if exists {
-		return nil, errors.New("email already in use")
 	}
 
 	fields := map[string]interface{}{
 		"name":  strings.TrimSpace(req.Name),
-		"email": strings.TrimSpace(req.Email),
 		"phone": req.Phone,
+	}
+
+	if allowEmailChange {
+		if strings.TrimSpace(req.Email) == "" {
+			return nil, errors.New("email is required")
+		}
+		// Ensure the email isn't taken by another account.
+		exists, err := u.authRepo.EmailExistsForOtherUser(req.Email, userID)
+		if err != nil {
+			return nil, errors.New("failed to validate email")
+		}
+		if exists {
+			return nil, errors.New("email already in use")
+		}
+		fields["email"] = strings.TrimSpace(req.Email)
+	}
+	// Only fields the client actually sent — an omitted one keeps its stored value.
+	if req.StoreName != nil {
+		fields["store_name"] = *req.StoreName
+	}
+	if req.Address != nil {
+		fields["address"] = *req.Address
+	}
+	if req.TaxID != nil {
+		fields["tax_id"] = *req.TaxID
+	}
+	if req.BankID != nil {
+		fields["bank_id"] = normalizeBankID(req.BankID)
+	}
+	if req.BankAccountNo != nil {
+		fields["bank_account_no"] = *req.BankAccountNo
+	}
+	if req.BankAccountName != nil {
+		fields["bank_account_name"] = *req.BankAccountName
 	}
 	if err := u.authRepo.UpdateProfile(userID, fields); err != nil {
 		return nil, errors.New("failed to update profile")
