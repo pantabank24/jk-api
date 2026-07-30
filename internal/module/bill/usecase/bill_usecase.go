@@ -49,6 +49,12 @@ type CreateBillRequest struct {
 	GoldRound       string `json:"-"`
 	GoldPriceID     *uint  `json:"-"`
 	Note            string `json:"note"`
+	// AutoSell marks a bill created by the auto-sell engine. Such a bill always
+	// stands alone (SellOrderID must point at exactly one bill) instead of
+	// accumulating into the customer's open bill the way a manual sell does.
+	// Set by the engine only — never from the payload.
+	AutoSell        bool                    `json:"-"`
+	SellOrderID     *uint                   `json:"-"`
 	Items           []CreateBillItemRequest `json:"items"`
 }
 
@@ -163,27 +169,32 @@ func (u *billUsecase) upsertPendingBill(req *CreateBillRequest, metal string, it
 		totalAmount += item.Total
 	}
 
-	if existing, err := u.billRepo.FindPendingByCreator(req.CreatedByUserID, metal); err == nil && existing != nil {
-		if err := u.billRepo.AppendItems(existing.ID, items); err != nil {
-			return nil, err
+	// An auto-sell fill always gets its own bill: the order links to one bill, and
+	// merging it into whatever the customer happens to have open would bury the
+	// automatic sale inside a manual one.
+	if !req.AutoSell {
+		if existing, err := u.billRepo.FindPendingByCreator(req.CreatedByUserID, metal); err == nil && existing != nil {
+			if err := u.billRepo.AppendItems(existing.ID, items); err != nil {
+				return nil, err
+			}
+			existing.TotalAmount += totalAmount
+			if err := u.billRepo.Update(existing); err != nil {
+				return nil, err
+			}
+			// The bill keeps its original code and created_at, so without this the
+			// customer gets no sign that the sell landed (staff selling on their
+			// behalf especially).
+			if existing.CreatedBy != nil {
+				_ = u.notifRepo.Create(&entity.Notification{
+					UserID: *existing.CreatedBy,
+					Type:   "bill_updated",
+					Title:  "เพิ่มรายการขายแล้ว",
+					Body: fmt.Sprintf("เพิ่ม %d รายการ (%s) เข้าบิล %s แล้ว ยอดรวม %s บาท",
+						len(items), metalLabel(metal), existing.Code, formatAmount(existing.TotalAmount)),
+				})
+			}
+			return u.billRepo.FindByID(existing.ID)
 		}
-		existing.TotalAmount += totalAmount
-		if err := u.billRepo.Update(existing); err != nil {
-			return nil, err
-		}
-		// The bill keeps its original code and created_at, so without this the
-		// customer gets no sign that the sell landed (staff selling on their
-		// behalf especially).
-		if existing.CreatedBy != nil {
-			_ = u.notifRepo.Create(&entity.Notification{
-				UserID: *existing.CreatedBy,
-				Type:   "bill_updated",
-				Title:  "เพิ่มรายการขายแล้ว",
-				Body: fmt.Sprintf("เพิ่ม %d รายการ (%s) เข้าบิล %s แล้ว ยอดรวม %s บาท",
-					len(items), metalLabel(metal), existing.Code, formatAmount(existing.TotalAmount)),
-			})
-		}
-		return u.billRepo.FindByID(existing.ID)
 	}
 
 	code, err := u.billRepo.GenerateCode()
@@ -204,6 +215,8 @@ func (u *billUsecase) upsertPendingBill(req *CreateBillRequest, metal string, it
 		GoldRound:   req.GoldRound,
 		GoldPriceID: req.GoldPriceID,
 		IsBill:      true,
+		AutoSell:    req.AutoSell,
+		SellOrderID: req.SellOrderID,
 		Items:       items,
 	}
 
@@ -211,7 +224,9 @@ func (u *billUsecase) upsertPendingBill(req *CreateBillRequest, metal string, it
 		return nil, err
 	}
 
-	if bill.CreatedBy != nil {
+	// An auto-sell fill is notified by the engine, which knows the target and the
+	// price it actually filled at — the generic "created" line would say less.
+	if bill.CreatedBy != nil && !req.AutoSell {
 		_ = u.notifRepo.Create(&entity.Notification{
 			UserID: *bill.CreatedBy,
 			Type:   "bill_created",

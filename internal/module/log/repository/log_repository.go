@@ -10,7 +10,7 @@ type LogRepository interface {
 	CreateLoginLog(log *entity.LoginLog) error
 	CreateActivityLog(log *entity.ActivityLog) error
 	GetLoginLogs(userID *uint, success *bool, page, limit int) ([]entity.LoginLog, int64, error)
-	GetActivityLogs(userID *uint, method string, page, limit int) ([]entity.ActivityLog, int64, error)
+	GetActivityLogs(userID *uint, customerID *uint, method string, describedOnly bool, page, limit int) ([]entity.ActivityLog, int64, error)
 	DeleteLoginLogsBefore(days int) (int64, error)
 	DeleteActivityLogsBefore(days int) (int64, error)
 }
@@ -49,16 +49,32 @@ func (r *logRepository) GetLoginLogs(userID *uint, success *bool, page, limit in
 	return logs, total, err
 }
 
-func (r *logRepository) GetActivityLogs(userID *uint, method string, page, limit int) ([]entity.ActivityLog, int64, error) {
+func (r *logRepository) GetActivityLogs(userID *uint, customerID *uint, method string, describedOnly bool, page, limit int) ([]entity.ActivityLog, int64, error) {
 	var logs []entity.ActivityLog
 	var total int64
 
-	query := r.db.Model(&entity.ActivityLog{}).Preload("User")
+	query := r.db.Model(&entity.ActivityLog{}).Preload("User").Preload("TargetUser")
 	if userID != nil {
 		query = query.Where("user_id = ?", *userID)
 	}
+	// A customer's full trail is both what they did and what was done to them:
+	// they click sell, then staff issue/approve/cancel the resulting bill under
+	// their own user_id. Filtering on user_id alone would end the story at the click.
+	// Parenthesised explicitly: without them the OR would reach across the
+	// method / described filters below and return the customer's whole history
+	// regardless of what was asked for.
+	if customerID != nil {
+		query = query.Where("(user_id = ? OR target_user_id = ?)", *customerID, *customerID)
+	}
 	if method != "" {
 		query = query.Where("method = ?", method)
+	}
+	// Every request is logged, so an unfiltered list is mostly page loads. A
+	// description is only set for business actions, which makes it the dividing
+	// line between the audit trail and the noise. Filtered here rather than in
+	// the client so that paging counts what the reader actually sees.
+	if describedOnly {
+		query = query.Where("description <> ''")
 	}
 
 	query.Count(&total)

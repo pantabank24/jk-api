@@ -17,11 +17,12 @@ import (
 type ConfigController struct {
 	repo        repository.ConfigRepository
 	cronService *service.GoldPriceCron
+	sellEngine  *service.SellOrderEngine
 	db          *gorm.DB
 }
 
-func NewConfigController(repo repository.ConfigRepository, cronService *service.GoldPriceCron, db *gorm.DB) *ConfigController {
-	return &ConfigController{repo: repo, cronService: cronService, db: db}
+func NewConfigController(repo repository.ConfigRepository, cronService *service.GoldPriceCron, sellEngine *service.SellOrderEngine, db *gorm.DB) *ConfigController {
+	return &ConfigController{repo: repo, cronService: cronService, sellEngine: sellEngine, db: db}
 }
 
 // GetSalesStatus reports whether sales are open right now. Available to any
@@ -106,6 +107,28 @@ func (ctrl *ConfigController) Update(c *fiber.Ctx) error {
 		if err := validateFloatRange(req.Value, service.RealtimeSpreadMin, service.RealtimeSpreadMax); err != nil {
 			return response.BadRequest(c, "ส่วนต่างราคาต้องเป็นตัวเลขระหว่าง 0 ถึง 1000 บาท")
 		}
+	// Auto-sell reaches live money with no human in the loop, so its numbers are
+	// validated here as well as clamped on read.
+	case service.KeyAutoSellMaxSlippage:
+		if err := validateFloatRange(req.Value, service.AutoSellMaxSlippageMin, service.AutoSellMaxSlippageMax); err != nil {
+			return response.BadRequest(c, "ส่วนต่างสูงสุดต้องเป็นตัวเลขระหว่าง 0 ถึง 10000 บาท (0 = ไม่จำกัด)")
+		}
+	case service.KeyAutoSellMaxActiveOrders:
+		if err := validateFloatRange(req.Value, service.AutoSellMaxActiveOrdersMin, service.AutoSellMaxActiveOrdersMax); err != nil {
+			return response.BadRequest(c, "จำนวนคำสั่งขายที่รออยู่ต้องเป็นตัวเลขระหว่าง 1 ถึง 100 รายการ")
+		}
+	case service.KeyAutoSellMaxActiveWeight:
+		if err := validateFloatRange(req.Value, service.AutoSellMaxActiveWeightMin, service.AutoSellMaxActiveWeightMax); err != nil {
+			return response.BadRequest(c, "น้ำหนักรวมที่รออยู่ต้องเป็นตัวเลขระหว่าง 1 ถึง 100000 บาท")
+		}
+	case service.KeyAutoSellMaxFeedAge:
+		if err := validateFloatRange(req.Value, service.AutoSellMaxFeedAgeMin, service.AutoSellMaxFeedAgeMax); err != nil {
+			return response.BadRequest(c, "อายุราคาสูงสุดต้องเป็นตัวเลขระหว่าง 3 ถึง 600 วินาที")
+		}
+	case service.KeyAutoSellTickSeconds:
+		if err := validateFloatRange(req.Value, service.AutoSellTickSecondsMin, service.AutoSellTickSecondsMax); err != nil {
+			return response.BadRequest(c, "ความถี่การตรวจราคาต้องเป็นตัวเลขระหว่าง 2 ถึง 300 วินาที")
+		}
 	}
 
 	if err := ctrl.repo.Set(req.Key, req.Value); err != nil {
@@ -121,6 +144,12 @@ func (ctrl *ConfigController) Update(c *fiber.Ctx) error {
 	// of waiting out the TTL.
 	if req.Key == service.KeyRealtimePremium || req.Key == service.KeyRealtimeSpread {
 		service.InvalidateRealtimePricing()
+	}
+
+	// The engine reads its policy every tick, so only the tick interval itself
+	// needs the ticker rebuilt.
+	if req.Key == service.KeyAutoSellTickSeconds && ctrl.sellEngine != nil {
+		ctrl.sellEngine.Reload()
 	}
 
 	return response.Success(c, "Config updated", nil)

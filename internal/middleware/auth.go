@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"encoding/json"
 	"strings"
 
 	"jk-api/config"
@@ -92,4 +93,62 @@ func GetActivityDescription(c *fiber.Ctx) string {
 		return d
 	}
 	return ""
+}
+
+// SetActivityTarget records WHOM the action was about — the customer whose bill
+// was touched — as opposed to the caller, who is logged automatically. Without
+// it, every step a staff member performs on a customer's bill (ออกบิล, อนุมัติ,
+// ยกเลิก, ลบ) lands only on the staff member's timeline and the customer's trail
+// stops at their own click. Ignored when userID is 0.
+func SetActivityTarget(c *fiber.Ctx, userID uint) {
+	if userID == 0 {
+		return
+	}
+	c.Locals("activity_target_user_id", userID)
+}
+
+// GetActivityTarget reads back SetActivityTarget, or nil if unset.
+func GetActivityTarget(c *fiber.Ctx) *uint {
+	if id, ok := c.Locals("activity_target_user_id").(uint); ok && id != 0 {
+		return &id
+	}
+	return nil
+}
+
+// SetActivityRef records the document code the action touched (bill/quotation).
+func SetActivityRef(c *fiber.Ctx, code string) {
+	c.Locals("activity_ref_code", code)
+}
+
+// GetActivityRef reads back SetActivityRef, or "" if unset.
+func GetActivityRef(c *fiber.Ctx) string {
+	if code, ok := c.Locals("activity_ref_code").(string); ok {
+		return code
+	}
+	return ""
+}
+
+// SetActivityDetail attaches a structured snapshot of the action (marshalled to
+// JSON) to the log row — the per-item price/weight/total a customer clicked, for
+// instance. Kept separate from the description so the frontend can render it as
+// a table and so it survives later edits to the bill it describes. A value that
+// fails to marshal is dropped rather than failing the request: the log is a
+// side effect and must never break the action it records.
+func SetActivityDetail(c *fiber.Ctx, v any) {
+	if v == nil {
+		return
+	}
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return
+	}
+	c.Locals("activity_detail", json.RawMessage(raw))
+}
+
+// GetActivityDetail reads back SetActivityDetail, or nil if unset.
+func GetActivityDetail(c *fiber.Ctx) json.RawMessage {
+	if d, ok := c.Locals("activity_detail").(json.RawMessage); ok {
+		return d
+	}
+	return nil
 }

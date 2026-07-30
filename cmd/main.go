@@ -64,8 +64,13 @@ func main() {
 	cronSvc := v1.NewCronService(db)
 	cronSvc.Start()
 
+	// Start the auto-sell engine (fills customers' target-price orders). It also
+	// resolves any fill interrupted by the previous shutdown as it starts.
+	sellEngine := v1.NewSellOrderEngine(db)
+	sellEngine.Start()
+
 	// Setup routes
-	router.SetupRoutes(app, db, cfg, cronSvc)
+	router.SetupRoutes(app, db, cfg, cronSvc, sellEngine)
 
 	// Graceful shutdown
 	quit := make(chan os.Signal, 1)
@@ -81,6 +86,9 @@ func main() {
 
 	<-quit
 	log.Println("🛑 Shutting down server...")
+	// Stop matching before the HTTP server: it waits for a tick in flight, so no
+	// order is left mid-fill for the boot recovery to clean up.
+	sellEngine.Stop()
 	if err := app.Shutdown(); err != nil {
 		log.Fatalf("Server forced to shutdown: %v", err)
 	}

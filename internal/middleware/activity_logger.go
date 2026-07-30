@@ -32,6 +32,9 @@ func ActivityLogger(repo logRepo.LogRepository) fiber.Handler {
 		ip          := c.IP()
 		userAgent   := c.Get("User-Agent")
 		description := GetActivityDescription(c)
+		targetUser  := GetActivityTarget(c)
+		refCode     := GetActivityRef(c)
+		detail      := GetActivityDetail(c)
 
 		var userIDPtr *uint
 		if uid := GetUserID(c); uid != 0 {
@@ -40,14 +43,17 @@ func ActivityLogger(repo logRepo.LogRepository) fiber.Handler {
 		}
 
 		log := &entity.ActivityLog{
-			UserID:      userIDPtr,
-			Method:      method,
-			Path:        path,
-			Description: description,
-			StatusCode:  statusCode,
-			IP:          ip,
-			UserAgent:   userAgent,
-			DurationMs:  durationMs,
+			UserID:       userIDPtr,
+			TargetUserID: targetUser,
+			Method:       method,
+			Path:         path,
+			Description:  description,
+			RefCode:      refCode,
+			Detail:       detail,
+			StatusCode:   statusCode,
+			IP:           ip,
+			UserAgent:    userAgent,
+			DurationMs:   durationMs,
 		}
 
 		go func() { _ = repo.CreateActivityLog(log) }()

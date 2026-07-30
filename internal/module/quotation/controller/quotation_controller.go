@@ -26,6 +26,67 @@ func NewQuotationController(quotationUsecase usecase.QuotationUsecase, db *gorm.
 	return &QuotationController{quotationUsecase: quotationUsecase, db: db}
 }
 
+// tagQuotation points the activity log at the customer the quotation was issued
+// for, so issuing/approving/editing/deleting it shows up on that customer's
+// timeline rather than only the issuer's. The customer is the owner of the bill
+// the quotation was issued against — resolved forward via BillID, or backward
+// via the bills that link to this quotation as their issued one (a master may
+// combine several of a customer's bills into one quotation).
+func (ctrl *QuotationController) tagQuotation(c *fiber.Ctx, q *entity.Quotation) {
+	if q == nil {
+		return
+	}
+	middleware.SetActivityRef(c, q.Code)
+
+	var owners []uint
+	// created_by is nullable, and Pluck into []uint cannot represent NULL — both
+	// lookups therefore exclude it rather than scanning a null into a zero id.
+	if q.BillID != nil {
+		ctrl.db.Model(&entity.Quotation{}).
+			Where("id = ? AND created_by IS NOT NULL", *q.BillID).
+			Pluck("created_by", &owners)
+	}
+	if len(owners) == 0 {
+		ctrl.db.Model(&entity.Quotation{}).
+			Where("issued_quotation_id = ? AND created_by IS NOT NULL", q.ID).
+			Distinct().Pluck("created_by", &owners)
+	}
+	// Exactly one owner, or the row would claim a customer it doesn't belong to.
+	if len(owners) == 1 {
+		middleware.SetActivityTarget(c, owners[0])
+	}
+}
+
+// beforeTotal reads a pre-edit total, or 0 when the document could not be read.
+func beforeTotal(q *entity.Quotation) float64 {
+	if q == nil {
+		return 0
+	}
+	return q.TotalAmount
+}
+
+// quotationLines flattens a quotation's items into the log's evidence shape:
+// the price, weight and amount that were printed on the document.
+func quotationLines(q *entity.Quotation) []map[string]any {
+	if q == nil {
+		return nil
+	}
+	lines := make([]map[string]any, 0, len(q.Items))
+	for _, it := range q.Items {
+		lines = append(lines, map[string]any{
+			"type_name": it.TypeName,
+			"metal":     it.Metal,
+			"price":     it.Price,
+			"percent":   it.Percent,
+			"plus":      it.Plus,
+			"weight":    it.Weight,
+			"per_gram":  it.PerGram,
+			"total":     it.Total,
+		})
+	}
+	return lines
+}
+
 // GetLatestSignature returns the most recent signature image a given customer
 // signed on any of their quotations, so the issuer can reuse it instead of
 // asking the customer to re-sign. Returns an empty image_url when none exists.
@@ -135,7 +196,18 @@ func (ctrl *QuotationController) CreateQuotation(c *fiber.Ctx) error {
 	if err != nil {
 		return response.BadRequest(c, err.Error())
 	}
-	middleware.SetActivityDescription(c, fmt.Sprintf("สร้างใบเสนอราคา %s ให้ %s", quotation.Code, quotation.SignerName))
+	middleware.SetActivityDescription(c, fmt.Sprintf(
+		"สร้างใบเสนอราคา %s ให้ %s (%d รายการ รวม %.2f บาท)",
+		quotation.Code, quotation.SignerName, len(quotation.Items), quotation.TotalAmount,
+	))
+	ctrl.tagQuotation(c, quotation)
+	middleware.SetActivityDetail(c, map[string]any{
+		"kind":         "issue_quotation",
+		"code":         quotation.Code,
+		"quotation_id": quotation.ID,
+		"total_amount": quotation.TotalAmount,
+		"items":        quotationLines(quotation),
+	})
 	return response.Created(c, "Quotation created", quotation)
 }
 
@@ -229,6 +301,7 @@ func (ctrl *QuotationController) UpdateQuotationStatus(c *fiber.Ctx) error {
 	case 2:
 		middleware.SetActivityDescription(c, fmt.Sprintf("ยกเลิกใบเสนอราคา %s (%s)", quotation.Code, quotation.RejectReason))
 	}
+	ctrl.tagQuotation(c, quotation)
 	return response.Success(c, "Quotation updated", quotation)
 }
 
@@ -243,12 +316,28 @@ func (ctrl *QuotationController) UpdateQuotation(c *fiber.Ctx) error {
 		return response.BadRequest(c, "Invalid request body")
 	}
 
+	// Read the document as issued before overwriting it — an edit to an already
+	// printed quotation is exactly the change a customer would later dispute.
+	before, _ := ctrl.quotationUsecase.GetQuotationByID(uint(id))
+
 	// Only master may edit a quotation that is already approved/cancelled.
 	quotation, err := ctrl.quotationUsecase.UpdateQuotation(uint(id), &req, middleware.IsMaster(c))
 	if err != nil {
 		return response.BadRequest(c, err.Error())
 	}
-	middleware.SetActivityDescription(c, fmt.Sprintf("แก้ไขใบเสนอราคา %s", quotation.Code))
+	middleware.SetActivityDescription(c, fmt.Sprintf(
+		"แก้ไขใบเสนอราคา %s (รวม %.2f บาท)", quotation.Code, quotation.TotalAmount,
+	))
+	ctrl.tagQuotation(c, quotation)
+	middleware.SetActivityDetail(c, map[string]any{
+		"kind":         "edit_quotation",
+		"code":         quotation.Code,
+		"quotation_id": quotation.ID,
+		"total_before": beforeTotal(before),
+		"total_amount": quotation.TotalAmount,
+		"before":       quotationLines(before),
+		"after":        quotationLines(quotation),
+	})
 	return response.Success(c, "Quotation updated", quotation)
 }
 
@@ -269,6 +358,14 @@ func (ctrl *QuotationController) UpdatePaymentMethod(c *fiber.Ctx) error {
 	if err != nil {
 		return response.BadRequest(c, err.Error())
 	}
+	payLabel := map[string]string{"cash": "เงินสด", "transfer": "โอนเงิน"}[req.PaymentMethod]
+	if payLabel == "" {
+		payLabel = "ยังไม่ระบุ"
+	}
+	middleware.SetActivityDescription(c, fmt.Sprintf(
+		"ระบุการชำระเงินใบเสนอราคา %s เป็น %s", quotation.Code, payLabel,
+	))
+	ctrl.tagQuotation(c, quotation)
 	return response.Success(c, "Payment method updated", quotation)
 }
 
@@ -280,7 +377,18 @@ func (ctrl *QuotationController) DeleteQuotation(c *fiber.Ctx) error {
 
 	// Fetch first to capture the code for the activity log (DeleteQuotation only returns an error).
 	if quotation, err := ctrl.quotationUsecase.GetQuotationByID(uint(id)); err == nil {
-		middleware.SetActivityDescription(c, fmt.Sprintf("ลบใบเสนอราคา %s", quotation.Code))
+		middleware.SetActivityDescription(c, fmt.Sprintf(
+			"ลบใบเสนอราคา %s (รวม %.2f บาท)", quotation.Code, quotation.TotalAmount,
+		))
+		ctrl.tagQuotation(c, quotation)
+		// Keep the document's contents in the log; after this the quotation is gone.
+		middleware.SetActivityDetail(c, map[string]any{
+			"kind":         "delete_quotation",
+			"code":         quotation.Code,
+			"quotation_id": quotation.ID,
+			"total_amount": quotation.TotalAmount,
+			"items":        quotationLines(quotation),
+		})
 	}
 
 	if err := ctrl.quotationUsecase.DeleteQuotation(uint(id)); err != nil {

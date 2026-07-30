@@ -181,12 +181,203 @@ func (ctrl *BillController) CreateBill(c *fiber.Ctx) error {
 	if err != nil {
 		return response.BadRequest(c, err.Error())
 	}
-	if sellCustomer != nil {
-		middleware.SetActivityDescription(c, fmt.Sprintf("ขายแทนลูกค้า %s (บิล %s)", sellCustomer.Name, bill.Code))
-	} else {
-		middleware.SetActivityDescription(c, fmt.Sprintf("ลูกค้าสร้างบิลขาย %s", bill.Code))
-	}
+	ctrl.logSell(c, &req, bill, sellCustomer, status)
 	return response.Created(c, "Bill created", bill)
+}
+
+// sellLogItem is one line exactly as it was clicked — the price on screen, the
+// weight entered and the amount that produced.
+type sellLogItem struct {
+	TypeName string  `json:"type_name"`
+	Metal    string  `json:"metal"`
+	Price    float64 `json:"price"`
+	Percent  float64 `json:"percent"`
+	Plus     float64 `json:"plus"`
+	Weight   float64 `json:"weight"`
+	PerGram  float64 `json:"per_gram"`
+	Total    float64 `json:"total"`
+}
+
+// sellLogDetail is the evidence snapshot for one sell click. It is deliberately
+// built from the REQUEST rather than the resulting bill: a manual sell merges
+// into the customer's open bill, so the bill's totals cover every earlier click
+// too, and its items can still be edited by staff afterwards. This payload is
+// the only record of what this particular click was priced at.
+type sellLogDetail struct {
+	Kind        string        `json:"kind"`
+	BillCode    string        `json:"bill_code"`
+	BillID      uint          `json:"bill_id"`
+	Metal       string        `json:"metal"`
+	GoldRound   string        `json:"gold_round"`
+	PriceMode   string        `json:"price_mode"`
+	OnBehalf    bool          `json:"on_behalf"`
+	TotalWeight float64       `json:"total_weight"`
+	TotalAmount float64       `json:"total_amount"`
+	Items       []sellLogItem `json:"items"`
+}
+
+// logSell records the sell click in the activity log with the full price/weight
+// breakdown, targeted at the customer the bill belongs to. This is what settles
+// a later "ราคาที่กดมาเท่าไหร่" dispute.
+func (ctrl *BillController) logSell(
+	c *fiber.Ctx,
+	req *usecase.CreateBillRequest,
+	bill *entity.Quotation,
+	sellCustomer *entity.User,
+	status service.SalesStatus,
+) {
+	detail := sellLogDetail{
+		Kind:      "sell",
+		BillCode:  bill.Code,
+		BillID:    bill.ID,
+		Metal:     bill.Metal,
+		GoldRound: req.GoldRound,
+		PriceMode: status.PriceMode,
+		OnBehalf:  sellCustomer != nil,
+		Items:     make([]sellLogItem, 0, len(req.Items)),
+	}
+	// Price is quoted per item, so a multi-item click has no single price; the
+	// per-item lines carry it and the header keeps only the summable figures.
+	for _, it := range req.Items {
+		metal := it.Metal
+		if metal == "" {
+			metal = "gold"
+		}
+		detail.Items = append(detail.Items, sellLogItem{
+			TypeName: it.TypeName,
+			Metal:    metal,
+			Price:    it.Price,
+			Percent:  it.Percent,
+			Plus:     it.Plus,
+			Weight:   it.Weight,
+			PerGram:  it.PerGram,
+			Total:    it.Total,
+		})
+		detail.TotalWeight += it.Weight
+		detail.TotalAmount += it.Total
+	}
+
+	// The one-line summary names the price for the common single-item case, so
+	// the timeline is readable without expanding every row.
+	priceText := "หลายราคา"
+	if len(req.Items) == 1 {
+		priceText = fmt.Sprintf("%s บาท", formatTH(req.Items[0].Price))
+	}
+	who := "ลูกค้ากดขาย"
+	if sellCustomer != nil {
+		who = fmt.Sprintf("พนักงานกดขายแทนลูกค้า %s", sellCustomer.Name)
+	}
+	middleware.SetActivityDescription(c, fmt.Sprintf(
+		"%s %s — ราคา %s น้ำหนัก %s รวม %s บาท (บิล %s)",
+		who, sellItemNames(req.Items), priceText,
+		formatWeight(detail.TotalWeight), formatTH(detail.TotalAmount), bill.Code,
+	))
+	middleware.SetActivityRef(c, bill.Code)
+	middleware.SetActivityDetail(c, detail)
+	if sellCustomer != nil {
+		middleware.SetActivityTarget(c, sellCustomer.ID)
+	} else {
+		middleware.SetActivityTarget(c, middleware.GetUserID(c))
+	}
+}
+
+// tagBill points the activity log at the customer the bill belongs to and the
+// bill's code. Every staff action on a bill calls this so the customer's
+// timeline continues past their own click, all the way to the closed bill.
+func tagBill(c *fiber.Ctx, bill *entity.Quotation) {
+	if bill == nil {
+		return
+	}
+	middleware.SetActivityRef(c, bill.Code)
+	if bill.CreatedBy != nil {
+		middleware.SetActivityTarget(c, *bill.CreatedBy)
+	}
+}
+
+// billOwner returns the single customer every listed bill belongs to, plus their
+// codes. Returns nil when the list is empty (a clear-everything sweep) or spans
+// more than one customer — a log row targets one customer or none.
+func (ctrl *BillController) billOwner(billIDs []uint) (*uint, []string) {
+	if len(billIDs) == 0 {
+		return nil, nil
+	}
+	var bills []entity.Quotation
+	if err := ctrl.db.Select("id", "code", "created_by").
+		Where("id IN ?", billIDs).Find(&bills).Error; err != nil || len(bills) == 0 {
+		return nil, nil
+	}
+	var owner *uint
+	codes := make([]string, 0, len(bills))
+	for i := range bills {
+		if bills[i].CreatedBy == nil {
+			return nil, nil
+		}
+		if owner == nil {
+			owner = bills[i].CreatedBy
+		} else if *owner != *bills[i].CreatedBy {
+			return nil, nil
+		}
+		codes = append(codes, bills[i].Code)
+	}
+	return owner, codes
+}
+
+// billItemLines flattens a bill's items into the log's line shape. Nil-safe:
+// a bill that could not be read logs as no lines rather than failing the action.
+func billItemLines(bill *entity.Quotation) []sellLogItem {
+	if bill == nil {
+		return nil
+	}
+	lines := make([]sellLogItem, 0, len(bill.Items))
+	for _, it := range bill.Items {
+		lines = append(lines, sellLogItem{
+			TypeName: it.TypeName,
+			Metal:    it.Metal,
+			Price:    it.Price,
+			Percent:  it.Percent,
+			Plus:     it.Plus,
+			Weight:   it.Weight,
+			PerGram:  it.PerGram,
+			Total:    it.Total,
+		})
+	}
+	return lines
+}
+
+// sellItemNames joins the item names for the summary line, collapsing a long
+// list so the description stays one readable line.
+func sellItemNames(items []usecase.CreateBillItemRequest) string {
+	if len(items) == 0 {
+		return ""
+	}
+	if len(items) == 1 {
+		return items[0].TypeName
+	}
+	return fmt.Sprintf("%s และอีก %d รายการ", items[0].TypeName, len(items)-1)
+}
+
+// formatTH renders an amount with thousands separators and 2 decimals.
+func formatTH(v float64) string {
+	s := fmt.Sprintf("%.2f", v)
+	intPart, decPart, _ := strings.Cut(s, ".")
+	neg := strings.HasPrefix(intPart, "-")
+	intPart = strings.TrimPrefix(intPart, "-")
+	var out []byte
+	for i, digit := range []byte(intPart) {
+		if i > 0 && (len(intPart)-i)%3 == 0 {
+			out = append(out, ',')
+		}
+		out = append(out, digit)
+	}
+	if neg {
+		return "-" + string(out) + "." + decPart
+	}
+	return string(out) + "." + decPart
+}
+
+// formatWeight trims trailing zeros — weights are entered as 2.5, not 2.5000.
+func formatWeight(v float64) string {
+	return strings.TrimRight(strings.TrimRight(fmt.Sprintf("%.4f", v), "0"), ".")
 }
 
 // resolveSellCustomer validates that the given id belongs to an active customer.
@@ -316,6 +507,7 @@ func (ctrl *BillController) IssueBill(c *fiber.Ctx) error {
 		return response.BadRequest(c, err.Error())
 	}
 	middleware.SetActivityDescription(c, fmt.Sprintf("ออกบิล %s ให้ลูกค้า", bill.Code))
+	tagBill(c, bill)
 	return response.Success(c, "Bill issued", bill)
 }
 
@@ -333,6 +525,7 @@ func (ctrl *BillController) ApproveBill(c *fiber.Ctx) error {
 		return response.BadRequest(c, err.Error())
 	}
 	middleware.SetActivityDescription(c, fmt.Sprintf("อนุมัติปิดบิล %s", bill.Code))
+	tagBill(c, bill)
 	// This bill just landed in the รอเคลียร์ pile — only its own metal's backlog
 	// moved, so only that metal is evaluated for an alert.
 	go service.SyncLineBacklogAlert(ctrl.db, bill.Metal, bill.StoreID, true)
@@ -348,12 +541,54 @@ func (ctrl *BillController) RemoveBillItem(c *fiber.Ctx) error {
 	if err != nil {
 		return response.BadRequest(c, "Invalid item ID")
 	}
+	// Read the bill before the removal: this is the one action that destroys the
+	// line it is logging, so the item's price and weight have to be captured up
+	// front — and when the last item goes the bill goes with it, taking the
+	// customer link with it.
+	before, _ := ctrl.billUsecase.GetBillByID(uint(billID))
+	var removed *entity.QuotationItem
+	if before != nil {
+		for i := range before.Items {
+			if before.Items[i].ID == uint(itemID) {
+				removed = &before.Items[i]
+				break
+			}
+		}
+	}
+
 	bill, deleted, err := ctrl.billUsecase.RemoveBillItem(uint(billID), uint(itemID))
 	if err != nil {
 		return response.BadRequest(c, err.Error())
 	}
+
+	tagBill(c, before)
+	if removed != nil {
+		middleware.SetActivityDetail(c, sellLogDetail{
+			Kind:        "remove_item",
+			BillCode:    before.Code,
+			BillID:      before.ID,
+			Metal:       removed.Metal,
+			TotalWeight: removed.Weight,
+			TotalAmount: removed.Total,
+			Items: []sellLogItem{{
+				TypeName: removed.TypeName,
+				Metal:    removed.Metal,
+				Price:    removed.Price,
+				Percent:  removed.Percent,
+				Plus:     removed.Plus,
+				Weight:   removed.Weight,
+				PerGram:  removed.PerGram,
+				Total:    removed.Total,
+			}},
+		})
+	}
+
 	if deleted {
-		middleware.SetActivityDescription(c, fmt.Sprintf("ลบรายการสุดท้ายและลบบิล #%d", billID))
+		code := fmt.Sprintf("#%d", billID)
+		if before != nil {
+			code = before.Code
+		}
+		middleware.SetActivityDescription(c, fmt.Sprintf("ลบรายการสุดท้ายและลบบิล %s", code))
 		return response.Success(c, "Bill item removed; bill deleted", fiber.Map{"deleted": true})
 	}
 	middleware.SetActivityDescription(c, fmt.Sprintf("ลบรายการในบิล %s", bill.Code))
@@ -370,6 +605,7 @@ func (ctrl *BillController) RevertBill(c *fiber.Ctx) error {
 		return response.BadRequest(c, err.Error())
 	}
 	middleware.SetActivityDescription(c, fmt.Sprintf("ดึงบิล %s กลับไปแก้ไข", bill.Code))
+	tagBill(c, bill)
 	go ctrl.releaseLineLatch()
 	return response.Success(c, "Bill reverted", bill)
 }
@@ -399,11 +635,24 @@ func (ctrl *BillController) ClearBills(c *fiber.Ctx) error {
 			return response.BadRequest(c, "Invalid request body")
 		}
 	}
+	// Resolve the owners before clearing — เคลียร์แล้ว is the end of the bill's
+	// life, so it has to land on the customer's timeline. A clear covering more
+	// than one customer has no single target and is logged untargeted.
+	owner, codes := ctrl.billOwner(req.BillIDs)
+
 	count, err := ctrl.billUsecase.ClearBills(storeID, req.BillIDs)
 	if err != nil {
 		return response.InternalServerError(c, err.Error())
 	}
-	middleware.SetActivityDescription(c, fmt.Sprintf("เคลียร์บิลสำเร็จ %d บิล", count))
+	if owner != nil {
+		middleware.SetActivityTarget(c, *owner)
+		middleware.SetActivityRef(c, strings.Join(codes, ", "))
+		middleware.SetActivityDescription(c, fmt.Sprintf(
+			"เคลียร์บิลสำเร็จ %d บิล (%s)", count, strings.Join(codes, ", "),
+		))
+	} else {
+		middleware.SetActivityDescription(c, fmt.Sprintf("เคลียร์บิลสำเร็จ %d บิล", count))
+	}
 	go ctrl.releaseLineLatch()
 	return response.Success(c, "Bills cleared", fiber.Map{"cleared": count})
 }
@@ -421,7 +670,13 @@ func (ctrl *BillController) CancelBill(c *fiber.Ctx) error {
 	if err != nil {
 		return response.BadRequest(c, err.Error())
 	}
-	middleware.SetActivityDescription(c, fmt.Sprintf("ยกเลิกบิล %s", bill.Code))
+	reason := strings.TrimSpace(req.RejectReason)
+	if reason != "" {
+		middleware.SetActivityDescription(c, fmt.Sprintf("ยกเลิกบิล %s (%s)", bill.Code, reason))
+	} else {
+		middleware.SetActivityDescription(c, fmt.Sprintf("ยกเลิกบิล %s", bill.Code))
+	}
+	tagBill(c, bill)
 	go ctrl.releaseLineLatch()
 	return response.Success(c, "Bill cancelled", bill)
 }
@@ -435,10 +690,28 @@ func (ctrl *BillController) UpdateBill(c *fiber.Ctx) error {
 	if err := c.BodyParser(&req); err != nil {
 		return response.BadRequest(c, "Invalid request body")
 	}
+	// Snapshot the items as they stood, so the log shows what the edit changed
+	// rather than only where it landed — an edited price is the usual root of a
+	// "แต่ตอนกดมันไม่ใช่ราคานี้" argument.
+	before, _ := ctrl.billUsecase.GetBillByID(uint(id))
+
 	bill, err := ctrl.billUsecase.UpdateBill(uint(id), &req)
 	if err != nil {
 		return response.BadRequest(c, err.Error())
 	}
+
+	middleware.SetActivityDescription(c, fmt.Sprintf(
+		"แก้ไขรายการในบิล %s (%d รายการ รวม %s บาท)",
+		bill.Code, len(bill.Items), formatTH(bill.TotalAmount),
+	))
+	tagBill(c, bill)
+	middleware.SetActivityDetail(c, map[string]any{
+		"kind":      "edit_bill",
+		"bill_code": bill.Code,
+		"bill_id":   bill.ID,
+		"before":    billItemLines(before),
+		"after":     billItemLines(bill),
+	})
 	return response.Success(c, "Bill updated", bill)
 }
 
@@ -448,7 +721,20 @@ func (ctrl *BillController) DeleteBill(c *fiber.Ctx) error {
 		return response.BadRequest(c, "Invalid bill ID")
 	}
 	if bill, err := ctrl.billUsecase.GetBillByID(uint(id)); err == nil {
-		middleware.SetActivityDescription(c, fmt.Sprintf("ลบบิล %s", bill.Code))
+		middleware.SetActivityDescription(c, fmt.Sprintf(
+			"ลบบิล %s (%d รายการ รวม %s บาท)", bill.Code, len(bill.Items), formatTH(bill.TotalAmount),
+		))
+		tagBill(c, bill)
+		// The bill is about to be gone, so the log has to carry its contents —
+		// otherwise a deleted bill leaves no trace of what it was priced at.
+		middleware.SetActivityDetail(c, sellLogDetail{
+			Kind:        "delete_bill",
+			BillCode:    bill.Code,
+			BillID:      bill.ID,
+			Metal:       bill.Metal,
+			TotalAmount: bill.TotalAmount,
+			Items:       billItemLines(bill),
+		})
 	}
 
 	if err := ctrl.billUsecase.DeleteBill(uint(id)); err != nil {
@@ -483,6 +769,28 @@ func (ctrl *BillController) PartialDeliver(c *fiber.Ctx) error {
 	if err != nil {
 		return response.BadRequest(c, err.Error())
 	}
+	// log_only batches record the final round's items without moving the
+	// processed totals, so they are described as a record, not a delivery.
+	verb := "บันทึกส่งมอบบางส่วน"
+	if req.LogOnly {
+		verb = "บันทึกรายการรอบสุดท้าย"
+	}
+	middleware.SetActivityDescription(c, fmt.Sprintf(
+		"%s บิล %s — น้ำหนัก %s ยอด %s บาท (สะสม %s / %s บาท)",
+		verb, bill.Code, formatWeight(req.Weight), formatTH(req.Amount),
+		formatWeight(bill.ProcessedWeight), formatTH(bill.ProcessedAmount),
+	))
+	tagBill(c, bill)
+	middleware.SetActivityDetail(c, map[string]any{
+		"kind":             "partial_deliver",
+		"bill_code":        bill.Code,
+		"bill_id":          bill.ID,
+		"weight":           req.Weight,
+		"amount":           req.Amount,
+		"log_only":         req.LogOnly,
+		"processed_weight": bill.ProcessedWeight,
+		"processed_amount": bill.ProcessedAmount,
+	})
 	return response.Success(c, "Partial delivery recorded", bill)
 }
 

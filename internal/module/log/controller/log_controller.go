@@ -53,7 +53,20 @@ func (ctrl *LogController) GetActivityLogs(c *fiber.Ctx) error {
 		userID = &u
 	}
 
-	logs, total, err := ctrl.logUsecase.GetActivityLogs(userID, method, page, limit)
+	// customer_id widens the filter to the customer's whole trail: their own
+	// actions plus everything staff did to their bills (target_user_id).
+	var customerID *uint
+	if cid := c.Query("customer_id"); cid != "" {
+		id, _ := strconv.ParseUint(cid, 10, 32)
+		u := uint(id)
+		customerID = &u
+	}
+
+	// described=true drops the request-level noise (page loads) and leaves only
+	// the business actions — the default view on a customer's timeline.
+	describedOnly := c.Query("described") == "true"
+
+	logs, total, err := ctrl.logUsecase.GetActivityLogs(userID, customerID, method, describedOnly, page, limit)
 	if err != nil {
 		return response.InternalServerError(c, err.Error())
 	}

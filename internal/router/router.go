@@ -9,7 +9,7 @@ import (
 	"gorm.io/gorm"
 )
 
-func SetupRoutes(app *fiber.App, db *gorm.DB, cfg *config.Config, cronSvc *service.GoldPriceCron) {
+func SetupRoutes(app *fiber.App, db *gorm.DB, cfg *config.Config, cronSvc *service.GoldPriceCron, sellEngine *service.SellOrderEngine) {
 	api := app.Group("/api")
-	v1.SetupV1Routes(api, db, cfg, cronSvc)
+	v1.SetupV1Routes(api, db, cfg, cronSvc, sellEngine)
 }

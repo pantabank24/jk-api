@@ -41,6 +41,12 @@ type Quotation struct {
 	BillID            *uint      `json:"bill_id" gorm:"index"`
 	IssuedQuotationID *uint      `json:"issued_quotation_id" gorm:"index"`
 	IssuedQuotation   *Quotation `json:"issued_quotation,omitempty" gorm:"foreignKey:IssuedQuotationID;references:ID"`
+	// AutoSell marks a bill the auto-sell engine created when a customer's target
+	// price was reached (SellOrderID links back to the order). Set only on bills.
+	// It is a display/audit flag: such a bill is otherwise an ordinary "รอออกบิล"
+	// bill and follows the same issue/approve flow.
+	AutoSell    bool  `json:"auto_sell" gorm:"default:false;index"`
+	SellOrderID *uint `json:"sell_order_id" gorm:"index"`
 	// ProcessedWeight/ProcessedAmount track partial deliveries by the master
 	// (รอส่งเพิ่ม). Accumulated each time the master records a batch of melted gold
 	// without issuing the full quotation yet. Only meaningful for bills (is_bill=true).

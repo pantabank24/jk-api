@@ -11,9 +11,9 @@ import (
 	"gorm.io/gorm"
 )
 
-func SetupConfigRoutes(v1 fiber.Router, db *gorm.DB, cfg *config.Config, cronSvc *service.GoldPriceCron) {
+func SetupConfigRoutes(v1 fiber.Router, db *gorm.DB, cfg *config.Config, cronSvc *service.GoldPriceCron, sellEngine *service.SellOrderEngine) {
 	repo := configRepo.NewConfigRepository(db)
-	ctrl := configCtrl.NewConfigController(repo, cronSvc, db)
+	ctrl := configCtrl.NewConfigController(repo, cronSvc, sellEngine, db)
 
 	cfgGroup := v1.Group("/configs", middleware.AuthMiddleware(cfg))
 	{

@@ -35,7 +35,7 @@ func (r *authRepository) FindByEmail(email string) (*entity.User, error) {
 
 func (r *authRepository) FindByIDWithRole(id uint) (*entity.User, error) {
 	var user entity.User
-	err := r.db.Preload("Role").Preload("Store").Preload("Branch").
+	err := r.db.Preload("Role").Preload("Store").Preload("Branch").Preload("Bank").
 		First(&user, id).Error
 	if err != nil {
 		return nil, err
