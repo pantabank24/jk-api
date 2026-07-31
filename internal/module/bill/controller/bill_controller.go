@@ -508,6 +508,9 @@ func (ctrl *BillController) IssueBill(c *fiber.Ctx) error {
 	}
 	middleware.SetActivityDescription(c, fmt.Sprintf("ออกบิล %s ให้ลูกค้า", bill.Code))
 	tagBill(c, bill)
+	// The metal on this bill is now the shop's: put it on its own metal's sell-in
+	// meter, which announces once for every full lot it completes.
+	go service.AccumulateSellIn(ctrl.db, bill)
 	return response.Success(c, "Bill issued", bill)
 }
 
@@ -607,6 +610,9 @@ func (ctrl *BillController) RevertBill(c *fiber.Ctx) error {
 	middleware.SetActivityDescription(c, fmt.Sprintf("ดึงบิล %s กลับไปแก้ไข", bill.Code))
 	tagBill(c, bill)
 	go ctrl.releaseLineLatch()
+	// The bill goes back to รอออกบิล and will be issued again — take its weight
+	// off the sell-in meter so the re-issue doesn't count it twice.
+	go service.ReleaseSellIn(ctrl.db, bill)
 	return response.Success(c, "Bill reverted", bill)
 }
 
@@ -666,9 +672,17 @@ func (ctrl *BillController) CancelBill(c *fiber.Ctx) error {
 	if err := c.BodyParser(&req); err != nil {
 		return response.BadRequest(c, "Invalid request body")
 	}
+	// Read the status before cancelling: only a bill that was already ออกบิลแล้ว
+	// ever reached the sell-in meter, and afterwards there is no way to tell.
+	before, _ := ctrl.billUsecase.GetBillByID(uint(id))
+	wasIssued := before != nil && before.Status == repository.StatusPendingReview
+
 	bill, err := ctrl.billUsecase.CancelBill(uint(id), &req)
 	if err != nil {
 		return response.BadRequest(c, err.Error())
+	}
+	if wasIssued {
+		go service.ReleaseSellIn(ctrl.db, bill)
 	}
 	reason := strings.TrimSpace(req.RejectReason)
 	if reason != "" {
