@@ -23,6 +23,5 @@ func SetupLineRoutes(v1 fiber.Router, db *gorm.DB, cfg *config.Config) {
 		line.Put("/config",  middleware.RequirePermission(db, "config.update"), ctrl.SaveConfig)
 		line.Post("/test",   middleware.RequirePermission(db, "config.update"), ctrl.Test)
 		line.Post("/unlink", middleware.RequirePermission(db, "config.update"), ctrl.Unlink)
-		line.Post("/sell-accum/reset", middleware.RequirePermission(db, "config.update"), ctrl.ResetSellAccum)
 	}
 }

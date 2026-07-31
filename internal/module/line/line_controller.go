@@ -85,7 +85,7 @@ func (ctrl *LineController) Status(c *fiber.Ctx) error {
 		"line_notify_enabled",
 		"line_notify_target_id",
 		// Per-metal toggles + thresholds: gold and silver are cleared separately,
-		// so they alert separately too. (The sell-in meters below follow suit.)
+		// so they alert separately too. (The pending-sell rules below follow suit.)
 		"line_notify_gold_enabled",
 		"line_notify_silver_enabled",
 		"line_bill_notify_threshold_gold",
@@ -105,10 +105,10 @@ func (ctrl *LineController) Status(c *fiber.Ctx) error {
 	// OA Basic ID is non-secret: used to generate the add-friend URL on the frontend.
 	result["oa_basic_id"] = os.Getenv("LINE_OA_BASIC_ID")
 	result["backlog"] = service.GetLineBacklogStatus(ctrl.db)
-	// The sell-in meters carry their own rule (enabled/threshold/purity) rather
-	// than being read out of the key list above — one row per metal, so a new
-	// metal needs no change here.
-	result["sell_accum"] = service.GetSellAccumStatus(ctrl.db)
+	// The pending-sell rules carry their own enabled/threshold/purity rather than
+	// being read out of the key list above — one row per metal, so a new metal
+	// needs no change here.
+	result["pending_sell"] = service.GetPendingSellStatus(ctrl.db)
 	return response.Success(c, "ok", result)
 }
 
@@ -133,25 +133,25 @@ func (ctrl *LineController) Quota(c *fiber.Ctx) error {
 }
 
 // SaveConfigRequest is the settings page's single save: the master switch, then
-// each metal's rule for both alerts — the บิลค้างเคลียร์ threshold and the sell-in
-// meter. Saving them together keeps the latch reset (below) consistent with
-// whatever combination the shop just chose.
+// each metal's rule for both alerts — the บิลค้างเคลียร์ threshold and the
+// pending-sell threshold. Saving them together keeps the latch reset (below)
+// consistent with whatever combination the shop just chose.
 type SaveConfigRequest struct {
 	Enabled         *bool `json:"enabled"`
 	GoldEnabled     *bool `json:"gold_enabled"`
 	SilverEnabled   *bool `json:"silver_enabled"`
 	GoldThreshold   *int  `json:"gold_threshold"`
 	SilverThreshold *int  `json:"silver_threshold"`
-	// Sell-in accumulation alert, keyed by metal so a new metal needs no field
-	// here. Its threshold is a weight (บาท for gold, กรัม for silver) rather than
-	// a bill count, so it takes decimals; the purity is free text that goes into
-	// the message as typed.
-	SellAccum map[string]SellAccumInput `json:"sell_accum"`
+	// Pending-sell alert, keyed by metal so a new metal needs no field here. Its
+	// threshold is a weight (บาท for gold, กรัม for silver) rather than a bill
+	// count, so it takes decimals; the purity is free text that goes into the
+	// message as typed.
+	PendingSell map[string]PendingSellInput `json:"pending_sell"`
 }
 
-// SellAccumInput is one metal's sell-in rule. Every field is optional so the page
-// can save a single toggle without restating the rest.
-type SellAccumInput struct {
+// PendingSellInput is one metal's pending-sell rule. Every field is optional so
+// the page can save a single toggle without restating the rest.
+type PendingSellInput struct {
 	Enabled   *bool    `json:"enabled"`
 	Threshold *float64 `json:"threshold"`
 	Purity    *string  `json:"purity"`
@@ -168,12 +168,12 @@ func (ctrl *LineController) SaveConfig(c *fiber.Ctx) error {
 			return response.BadRequest(c, "เกณฑ์จำนวนบิลต้องอยู่ระหว่าง 0 ถึง 10000")
 		}
 	}
-	for metal, rule := range req.SellAccum {
+	for metal, rule := range req.PendingSell {
 		if !service.IsLineMetal(metal) {
 			return response.BadRequest(c, "metal ต้องเป็น gold หรือ silver")
 		}
 		if rule.Threshold != nil && (*rule.Threshold < 0 || *rule.Threshold > 1000000) {
-			return response.BadRequest(c, "เกณฑ์น้ำหนักสะสมต้องอยู่ระหว่าง 0 ถึง 1000000")
+			return response.BadRequest(c, "เกณฑ์น้ำหนักต้องอยู่ระหว่าง 0 ถึง 1000000")
 		}
 		if rule.Purity != nil {
 			purity := strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(*rule.Purity), "%"))
@@ -201,8 +201,8 @@ func (ctrl *LineController) SaveConfig(c *fiber.Ctx) error {
 	if req.SilverThreshold != nil {
 		ctrl.upsertConfig("line_bill_notify_threshold_silver", strconv.Itoa(*req.SilverThreshold))
 	}
-	for metal, rule := range req.SellAccum {
-		service.SetSellAccumConfig(ctrl.db, metal, rule.Enabled, rule.Threshold, rule.Purity)
+	for metal, rule := range req.PendingSell {
+		service.SetPendingSellConfig(ctrl.db, metal, rule.Enabled, rule.Threshold, rule.Purity)
 	}
 
 	// A new threshold makes the old latch meaningless: re-arm, then re-evaluate so
@@ -212,8 +212,8 @@ func (ctrl *LineController) SaveConfig(c *fiber.Ctx) error {
 	service.SyncAllLineBacklogAlerts(ctrl.db)
 
 	return response.Success(c, "saved", fiber.Map{
-		"backlog":    service.GetLineBacklogStatus(ctrl.db),
-		"sell_accum": service.GetSellAccumStatus(ctrl.db),
+		"backlog":      service.GetLineBacklogStatus(ctrl.db),
+		"pending_sell": service.GetPendingSellStatus(ctrl.db),
 	})
 }
 
@@ -227,8 +227,8 @@ func (ctrl *LineController) Test(c *fiber.Ctx) error {
 		return response.BadRequest(c, "metal ต้องเป็น gold หรือ silver")
 	}
 	switch c.Query("kind", "backlog") {
-	case "sell_accum":
-		if err := service.SendSellAccumTestAlert(ctrl.db, metal); err != nil {
+	case "pending_sell":
+		if err := service.SendPendingSellTestAlert(ctrl.db, metal); err != nil {
 			return response.BadRequest(c, "ส่งข้อความทดสอบไม่สำเร็จ: "+err.Error())
 		}
 	case "backlog":
@@ -236,22 +236,9 @@ func (ctrl *LineController) Test(c *fiber.Ctx) error {
 			return response.BadRequest(c, "ส่งข้อความทดสอบไม่สำเร็จ: "+err.Error())
 		}
 	default:
-		return response.BadRequest(c, "kind ต้องเป็น backlog หรือ sell_accum")
+		return response.BadRequest(c, "kind ต้องเป็น backlog หรือ pending_sell")
 	}
 	return response.Success(c, "sent", nil)
-}
-
-// ResetSellAccum zeroes one metal's sell-in meter. Manual, and one metal at a
-// time, because the carried remainder is real metal on the bench: it is only
-// wrong when a lot was settled outside the system, and the shop is the one who
-// knows that happened — to one metal, not to both.
-func (ctrl *LineController) ResetSellAccum(c *fiber.Ctx) error {
-	metal := c.Query("metal", "")
-	if !service.IsLineMetal(metal) {
-		return response.BadRequest(c, "metal ต้องเป็น gold หรือ silver")
-	}
-	service.ResetSellAccum(ctrl.db, metal)
-	return response.Success(c, "reset", fiber.Map{"sell_accum": service.GetSellAccumStatus(ctrl.db)})
 }
 
 // Unlink clears the stored target ID (authenticated).

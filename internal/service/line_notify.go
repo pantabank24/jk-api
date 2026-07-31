@@ -27,7 +27,8 @@ func setConfigValue(db *gorm.DB, key, value string) {
 // Bill statuses this file cares about. Duplicated from the bill repository's
 // constants rather than imported, so service/ stays free of module/ imports.
 const (
-	billStatusCompleted = 12 // สำเร็จ — waiting for เคลียร์บิล
+	billStatusPendingIssue = 10 // รอออกบิล — sold in, not billed yet
+	billStatusCompleted    = 12 // สำเร็จ — waiting for เคลียร์บิล
 )
 
 // LINE config keys. The per-metal pair is derived by suffix so a new metal only

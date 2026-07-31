@@ -182,6 +182,11 @@ func (ctrl *BillController) CreateBill(c *fiber.Ctx) error {
 		return response.BadRequest(c, err.Error())
 	}
 	ctrl.logSell(c, &req, bill, sellCustomer, status)
+	// The sell just grew this customer's รอออกบิล pile — check it against the
+	// threshold. Driven off the REQUEST's metals, not the returned bill: a payload
+	// covering both metals is split into one bill per metal and only the first
+	// comes back, so the other one's pile would never be looked at.
+	go ctrl.syncPendingSellMetals(req.CreatedByUserID, req.Items)
 	return response.Created(c, "Bill created", bill)
 }
 
@@ -508,9 +513,9 @@ func (ctrl *BillController) IssueBill(c *fiber.Ctx) error {
 	}
 	middleware.SetActivityDescription(c, fmt.Sprintf("ออกบิล %s ให้ลูกค้า", bill.Code))
 	tagBill(c, bill)
-	// The metal on this bill is now the shop's: put it on its own metal's sell-in
-	// meter, which announces once for every full lot it completes.
-	go service.AccumulateSellIn(ctrl.db, bill)
+	// This weight has left รอออกบิล, so the customer's pile just shrank — re-arm
+	// their alert for the next pile they build up.
+	go ctrl.syncPendingSell(bill)
 	return response.Success(c, "Bill issued", bill)
 }
 
@@ -586,6 +591,9 @@ func (ctrl *BillController) RemoveBillItem(c *fiber.Ctx) error {
 		})
 	}
 
+	// Either way the customer's รอออกบิล pile just got lighter — re-arm.
+	go ctrl.syncPendingSell(before)
+
 	if deleted {
 		code := fmt.Sprintf("#%d", billID)
 		if before != nil {
@@ -610,10 +618,39 @@ func (ctrl *BillController) RevertBill(c *fiber.Ctx) error {
 	middleware.SetActivityDescription(c, fmt.Sprintf("ดึงบิล %s กลับไปแก้ไข", bill.Code))
 	tagBill(c, bill)
 	go ctrl.releaseLineLatch()
-	// The bill goes back to รอออกบิล and will be issued again — take its weight
-	// off the sell-in meter so the re-issue doesn't count it twice.
-	go service.ReleaseSellIn(ctrl.db, bill)
+	// Back at รอออกบิล, so this weight counts towards the customer's pile again.
+	go ctrl.syncPendingSell(bill)
 	return response.Success(c, "Bill reverted", bill)
+}
+
+// syncPendingSell re-checks the bill owner's รอออกบิล pile for that bill's metal.
+// Called after anything that can change it — a sell landing, an edit, a line
+// removed, or the bill leaving รอออกบิล altogether.
+func (ctrl *BillController) syncPendingSell(bill *entity.Quotation) {
+	if bill == nil || bill.CreatedBy == nil {
+		return
+	}
+	service.SyncPendingSellAlert(ctrl.db, *bill.CreatedBy, bill.Metal)
+}
+
+// syncPendingSellMetals checks one customer's pile once per distinct metal in a
+// sell payload.
+func (ctrl *BillController) syncPendingSellMetals(userID uint, items []usecase.CreateBillItemRequest) {
+	if userID == 0 {
+		return
+	}
+	seen := map[string]bool{}
+	for _, it := range items {
+		metal := it.Metal
+		if metal == "" {
+			metal = "gold"
+		}
+		if seen[metal] {
+			continue
+		}
+		seen[metal] = true
+		service.SyncPendingSellAlert(ctrl.db, userID, metal)
+	}
 }
 
 // releaseLineLatch re-arms the LINE alert for both metals after an action that
@@ -672,18 +709,13 @@ func (ctrl *BillController) CancelBill(c *fiber.Ctx) error {
 	if err := c.BodyParser(&req); err != nil {
 		return response.BadRequest(c, "Invalid request body")
 	}
-	// Read the status before cancelling: only a bill that was already ออกบิลแล้ว
-	// ever reached the sell-in meter, and afterwards there is no way to tell.
-	before, _ := ctrl.billUsecase.GetBillByID(uint(id))
-	wasIssued := before != nil && before.Status == repository.StatusPendingReview
-
 	bill, err := ctrl.billUsecase.CancelBill(uint(id), &req)
 	if err != nil {
 		return response.BadRequest(c, err.Error())
 	}
-	if wasIssued {
-		go service.ReleaseSellIn(ctrl.db, bill)
-	}
+	// A cancelled bill is out of the รอออกบิล pile whether or not it had been
+	// issued, so the owner's alert re-arms either way.
+	go ctrl.syncPendingSell(bill)
 	reason := strings.TrimSpace(req.RejectReason)
 	if reason != "" {
 		middleware.SetActivityDescription(c, fmt.Sprintf("ยกเลิกบิล %s (%s)", bill.Code, reason))
@@ -726,6 +758,9 @@ func (ctrl *BillController) UpdateBill(c *fiber.Ctx) error {
 		"before":    billItemLines(before),
 		"after":     billItemLines(bill),
 	})
+	// An edit can move the pile in either direction — a heavier line pushes it
+	// over the threshold, a lighter one re-arms it.
+	go ctrl.syncPendingSell(bill)
 	return response.Success(c, "Bill updated", bill)
 }
 
@@ -751,10 +786,13 @@ func (ctrl *BillController) DeleteBill(c *fiber.Ctx) error {
 		})
 	}
 
+	deleted, _ := ctrl.billUsecase.GetBillByID(uint(id))
 	if err := ctrl.billUsecase.DeleteBill(uint(id)); err != nil {
 		return response.NotFound(c, err.Error())
 	}
 	go ctrl.releaseLineLatch()
+	// Read before the delete, because afterwards there is no owner to look up.
+	go ctrl.syncPendingSell(deleted)
 	return response.Success(c, "Bill deleted", nil)
 }
 
