@@ -182,11 +182,11 @@ func (ctrl *BillController) CreateBill(c *fiber.Ctx) error {
 		return response.BadRequest(c, err.Error())
 	}
 	ctrl.logSell(c, &req, bill, sellCustomer, status)
-	// The sell just grew this customer's รอออกบิล pile — check it against the
+	// The sell just grew the shop's รอออกบิล pile — check it against the
 	// threshold. Driven off the REQUEST's metals, not the returned bill: a payload
 	// covering both metals is split into one bill per metal and only the first
 	// comes back, so the other one's pile would never be looked at.
-	go ctrl.syncPendingSellMetals(req.CreatedByUserID, req.Items)
+	go ctrl.syncPendingSellMetals(req.Items)
 	return response.Created(c, "Bill created", bill)
 }
 
@@ -623,22 +623,20 @@ func (ctrl *BillController) RevertBill(c *fiber.Ctx) error {
 	return response.Success(c, "Bill reverted", bill)
 }
 
-// syncPendingSell re-checks the bill owner's รอออกบิล pile for that bill's metal.
+// syncPendingSell re-checks the shop's รอออกบิล pile for that bill's metal.
 // Called after anything that can change it — a sell landing, an edit, a line
-// removed, or the bill leaving รอออกบิล altogether.
+// removed, or the bill leaving รอออกบิล altogether. Only the metal is needed:
+// the pile is counted across every customer's bills, not the owner's alone.
 func (ctrl *BillController) syncPendingSell(bill *entity.Quotation) {
-	if bill == nil || bill.CreatedBy == nil {
+	if bill == nil {
 		return
 	}
-	service.SyncPendingSellAlert(ctrl.db, *bill.CreatedBy, bill.Metal)
+	service.SyncPendingSellAlert(ctrl.db, bill.Metal)
 }
 
-// syncPendingSellMetals checks one customer's pile once per distinct metal in a
-// sell payload.
-func (ctrl *BillController) syncPendingSellMetals(userID uint, items []usecase.CreateBillItemRequest) {
-	if userID == 0 {
-		return
-	}
+// syncPendingSellMetals checks the pile once per distinct metal in a sell
+// payload.
+func (ctrl *BillController) syncPendingSellMetals(items []usecase.CreateBillItemRequest) {
 	seen := map[string]bool{}
 	for _, it := range items {
 		metal := it.Metal
@@ -649,7 +647,7 @@ func (ctrl *BillController) syncPendingSellMetals(userID uint, items []usecase.C
 			continue
 		}
 		seen[metal] = true
-		service.SyncPendingSellAlert(ctrl.db, userID, metal)
+		service.SyncPendingSellAlert(ctrl.db, metal)
 	}
 }
 

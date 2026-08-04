@@ -243,9 +243,9 @@ func (e *SellOrderEngine) fill(order *entity.SellOrder, price float64, cfg AutoS
 	e.notifyFilled(order, bill, price)
 	// Keep the shop's LINE alerts honest: the engine just added a bill nobody
 	// pressed a button for — it lands at รอออกบิล like any other sell, so it
-	// counts towards the customer's pending pile too.
+	// counts towards the shop's pending pile too.
 	go SyncLineBacklogAlert(e.db, "gold", bill.StoreID, true)
-	go SyncPendingSellAlert(e.db, order.UserID, "gold")
+	go SyncPendingSellAlert(e.db, "gold")
 	e.logActivity(order, bill, price)
 }
 

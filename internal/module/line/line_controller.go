@@ -107,8 +107,10 @@ func (ctrl *LineController) Status(c *fiber.Ctx) error {
 	result["backlog"] = service.GetLineBacklogStatus(ctrl.db)
 	// The pending-sell rules carry their own enabled/threshold/purity rather than
 	// being read out of the key list above — one row per metal, so a new metal
-	// needs no change here.
+	// needs no change here. The signature on the message is shared by both metals,
+	// and goes through the service so an unset row still reports the default.
 	result["pending_sell"] = service.GetPendingSellStatus(ctrl.db)
+	result["pending_sell_name"] = service.PendingSellName(ctrl.db)
 	return response.Success(c, "ok", result)
 }
 
@@ -147,6 +149,9 @@ type SaveConfigRequest struct {
 	// count, so it takes decimals; the purity is free text that goes into the
 	// message as typed.
 	PendingSell map[string]PendingSellInput `json:"pending_sell"`
+	// Who the pending-sell announcement is signed by — one name for both metals,
+	// so it sits beside the map rather than inside it.
+	PendingSellName *string `json:"pending_sell_name"`
 }
 
 // PendingSellInput is one metal's pending-sell rule. Every field is optional so
@@ -185,6 +190,15 @@ func (ctrl *LineController) SaveConfig(c *fiber.Ctx) error {
 			}
 		}
 	}
+	if req.PendingSellName != nil {
+		name := strings.TrimSpace(*req.PendingSellName)
+		if name == "" {
+			return response.BadRequest(c, "กรุณาระบุชื่อผู้แจ้งในข้อความแจ้งขาย")
+		}
+		if len([]rune(name)) > 100 {
+			return response.BadRequest(c, "ชื่อผู้แจ้งยาวเกินไป")
+		}
+	}
 
 	if req.Enabled != nil {
 		ctrl.upsertConfig("line_notify_enabled", boolStr(*req.Enabled))
@@ -204,6 +218,9 @@ func (ctrl *LineController) SaveConfig(c *fiber.Ctx) error {
 	for metal, rule := range req.PendingSell {
 		service.SetPendingSellConfig(ctrl.db, metal, rule.Enabled, rule.Threshold, rule.Purity)
 	}
+	if req.PendingSellName != nil {
+		service.SetPendingSellName(ctrl.db, *req.PendingSellName)
+	}
 
 	// A new threshold makes the old latch meaningless: re-arm, then re-evaluate so
 	// a backlog that is already over the new (lower) threshold isn't stuck silent
@@ -212,8 +229,9 @@ func (ctrl *LineController) SaveConfig(c *fiber.Ctx) error {
 	service.SyncAllLineBacklogAlerts(ctrl.db)
 
 	return response.Success(c, "saved", fiber.Map{
-		"backlog":      service.GetLineBacklogStatus(ctrl.db),
-		"pending_sell": service.GetPendingSellStatus(ctrl.db),
+		"backlog":           service.GetLineBacklogStatus(ctrl.db),
+		"pending_sell":      service.GetPendingSellStatus(ctrl.db),
+		"pending_sell_name": service.PendingSellName(ctrl.db),
 	})
 }
 
