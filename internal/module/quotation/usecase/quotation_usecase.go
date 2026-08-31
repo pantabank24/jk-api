@@ -56,6 +56,9 @@ type CreateQuotationRequest struct {
 	// quotations deduct credits from the creator's member profile on creation.
 	CreatedByUserID uint `json:"-"`
 	UsesCredits     bool `json:"-"`
+	// UseBillCode is true for quotations initiated by any non-master role.
+	// Approval by a master later never changes the originating prefix.
+	UseBillCode bool `json:"-"`
 	// GoldRound/GoldPriceID record the gold-price round in effect at creation
 	// (set from the latest gold price in the controller) for reporting.
 	GoldRound   string `json:"-"`
@@ -143,6 +146,16 @@ func documentMetal(items []entity.QuotationItem) string {
 	return metal
 }
 
+func displayCode(quotation *entity.Quotation) string {
+	if quotation != nil && quotation.DisplayCode != "" {
+		return quotation.DisplayCode
+	}
+	if quotation == nil {
+		return ""
+	}
+	return quotation.Code
+}
+
 type UpdateStatusRequest struct {
 	Status       int    `json:"status"`
 	Note         string `json:"note"`
@@ -195,6 +208,18 @@ func (u *quotationUsecase) CreateQuotation(req *CreateQuotationRequest) (*entity
 	if !req.PDPAConsent {
 		return nil, errors.New("กรุณายอมรับเงื่อนไขการเก็บข้อมูลส่วนบุคคล (PDPA) ก่อนบันทึก")
 	}
+	// Preserve one canonical source bill for the user-facing display number. The
+	// full BillIDs slice still controls which bills are covered by this issuance.
+	if req.BillID == nil && len(req.BillIDs) > 0 {
+		primaryBillID := req.BillIDs[0]
+		req.BillID = &primaryBillID
+	}
+	var sourceDisplayCode string
+	if req.BillID != nil {
+		if sources, err := u.quotationRepo.FindBillsByIDs([]uint{*req.BillID}); err == nil && len(sources) > 0 {
+			sourceDisplayCode = sources[0].Code
+		}
+	}
 
 	// Calculate total
 	var totalAmount float64
@@ -214,7 +239,13 @@ func (u *quotationUsecase) CreateQuotation(req *CreateQuotationRequest) (*entity
 		}
 	}
 
-	code, err := u.quotationRepo.GenerateCode()
+	var code string
+	var err error
+	if req.UseBillCode {
+		code, err = u.quotationRepo.GenerateBillCode()
+	} else {
+		code, err = u.quotationRepo.GenerateCode()
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -241,6 +272,7 @@ func (u *quotationUsecase) CreateQuotation(req *CreateQuotationRequest) (*entity
 		MemberID:      req.MemberID,
 		CreatedBy:     &createdBy,
 		Code:          code,
+		DisplayCode:   sourceDisplayCode,
 		Status:        1, // approved immediately on creation
 		Metal:         documentMetal(items),
 		Note:          req.Note,
@@ -283,7 +315,7 @@ func (u *quotationUsecase) CreateQuotation(req *CreateQuotationRequest) (*entity
 			Action:      1, // withdraw
 			Amount:      totalAmount,
 			Balance:     newBalance,
-			Description: "หักเครดิตจากใบเสนอราคา " + quotation.Code,
+			Description: "หักเครดิตจากใบเสนอราคา " + displayCode(quotation),
 			CreatedBy:   &createdBy,
 		})
 		deducted = true
@@ -291,9 +323,9 @@ func (u *quotationUsecase) CreateQuotation(req *CreateQuotationRequest) (*entity
 
 	// Notify the creator that the quotation was approved.
 	if quotation.CreatedBy != nil {
-		body := fmt.Sprintf("ใบเสนอราคา %s ได้รับการอนุมัติแล้ว", quotation.Code)
+		body := fmt.Sprintf("ใบเสนอราคา %s ได้รับการอนุมัติแล้ว", displayCode(quotation))
 		if deducted {
-			body = fmt.Sprintf("ใบเสนอราคา %s อนุมัติแล้ว หักเครดิต %.2f บาท คงเหลือ %.2f บาท", quotation.Code, totalAmount, creditMember.Credits)
+			body = fmt.Sprintf("ใบเสนอราคา %s อนุมัติแล้ว หักเครดิต %.2f บาท คงเหลือ %.2f บาท", displayCode(quotation), totalAmount, creditMember.Credits)
 		}
 		_ = u.notifRepo.Create(&entity.Notification{
 			UserID: *quotation.CreatedBy,
@@ -325,6 +357,9 @@ func (u *quotationUsecase) CreateQuotation(req *CreateQuotationRequest) (*entity
 		if bills, err := u.quotationRepo.FindBillsByIDs(billIDs); err == nil {
 			for i := range bills {
 				bill := &bills[i]
+				if quotation.DisplayCode == "" || (req.BillID != nil && bill.ID == *req.BillID) {
+					quotation.DisplayCode = bill.Code
+				}
 				if notifiedUser == nil {
 					notifiedUser = bill.CreatedBy
 				}
@@ -424,21 +459,21 @@ func (u *quotationUsecase) UpdateQuotationStatus(id uint, req *UpdateStatusReque
 				Action:      1, // withdraw
 				Amount:      quotation.TotalAmount,
 				Balance:     newBalance,
-				Description: "หักเครดิตจากใบเสนอราคา " + quotation.Code,
+				Description: "หักเครดิตจากใบเสนอราคา " + displayCode(quotation),
 				CreatedBy:   quotation.CreatedBy,
 			})
 			_ = u.notifRepo.Create(&entity.Notification{
 				UserID: *quotation.CreatedBy,
 				Type:   "quotation_approved",
 				Title:  "ใบเสนอราคาได้รับการอนุมัติ",
-				Body:   fmt.Sprintf("ใบเสนอราคา %s ได้รับการอนุมัติ หักเครดิต %.2f บาท คงเหลือ %.2f บาท", quotation.Code, quotation.TotalAmount, newBalance),
+				Body:   fmt.Sprintf("ใบเสนอราคา %s ได้รับการอนุมัติ หักเครดิต %.2f บาท คงเหลือ %.2f บาท", displayCode(quotation), quotation.TotalAmount, newBalance),
 			})
 		} else if quotation.CreatedBy != nil {
 			_ = u.notifRepo.Create(&entity.Notification{
 				UserID: *quotation.CreatedBy,
 				Type:   "quotation_approved",
 				Title:  "ใบเสนอราคาได้รับการอนุมัติ",
-				Body:   fmt.Sprintf("ใบเสนอราคา %s ได้รับการอนุมัติแล้ว", quotation.Code),
+				Body:   fmt.Sprintf("ใบเสนอราคา %s ได้รับการอนุมัติแล้ว", displayCode(quotation)),
 			})
 		}
 	}
@@ -446,7 +481,7 @@ func (u *quotationUsecase) UpdateQuotationStatus(id uint, req *UpdateStatusReque
 	// On cancellation (status=2): notify the creator, mentioning the refund the
 	// block above already made.
 	if req.Status == 2 && quotation.CreatedBy != nil {
-		body := fmt.Sprintf("ใบเสนอราคา %s ถูกยกเลิก", quotation.Code)
+		body := fmt.Sprintf("ใบเสนอราคา %s ถูกยกเลิก", displayCode(quotation))
 		if req.RejectReason != "" {
 			body += " เหตุผล: " + req.RejectReason
 		}
@@ -565,7 +600,7 @@ func (u *quotationUsecase) UpdateQuotation(id uint, req *UpdateQuotationRequest,
 				Action:      action,
 				Amount:      amount,
 				Balance:     member.Credits,
-				Description: "ปรับเครดิตจากการแก้ไขใบเสนอราคา " + quotation.Code,
+				Description: "ปรับเครดิตจากการแก้ไขใบเสนอราคา " + displayCode(quotation),
 				CreatedBy:   quotation.CreatedBy,
 			})
 		}
@@ -613,7 +648,7 @@ func (u *quotationUsecase) refundCredits(quotation *entity.Quotation, descriptio
 		Action:      0, // deposit (refund)
 		Amount:      quotation.TotalAmount,
 		Balance:     member.Credits,
-		Description: description + quotation.Code,
+		Description: description + displayCode(quotation),
 		CreatedBy:   quotation.CreatedBy,
 	})
 	quotation.CreditsRefunded = true

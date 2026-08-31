@@ -26,6 +26,16 @@ func NewQuotationController(quotationUsecase usecase.QuotationUsecase, db *gorm.
 	return &QuotationController{quotationUsecase: quotationUsecase, db: db}
 }
 
+func visibleQuotationCode(q *entity.Quotation) string {
+	if q != nil && q.DisplayCode != "" {
+		return q.DisplayCode
+	}
+	if q == nil {
+		return ""
+	}
+	return q.Code
+}
+
 // tagQuotation points the activity log at the customer the quotation was issued
 // for, so issuing/approving/editing/deleting it shows up on that customer's
 // timeline rather than only the issuer's. The customer is the owner of the bill
@@ -36,7 +46,7 @@ func (ctrl *QuotationController) tagQuotation(c *fiber.Ctx, q *entity.Quotation)
 	if q == nil {
 		return
 	}
-	middleware.SetActivityRef(c, q.Code)
+	middleware.SetActivityRef(c, visibleQuotationCode(q))
 
 	var owners []uint
 	// created_by is nullable, and Pluck into []uint cannot represent NULL — both
@@ -191,6 +201,9 @@ func (ctrl *QuotationController) CreateQuotation(c *fiber.Ctx) error {
 	// Use strict lookup (no master shortcut) since credits.use is a constraint, not a privilege.
 	req.UsesCredits = middleware.HasPermissionStrict(ctrl.db, c, "credits.use")
 	req.CreatedByUserID = middleware.GetUserID(c)
+	// Prefix belongs to the role that starts the document: only master/admin
+	// creates P documents; owner/employee/customer-origin documents use BILL.
+	req.UseBillCode = !middleware.IsMaster(c)
 
 	quotation, err := ctrl.quotationUsecase.CreateQuotation(&req)
 	if err != nil {
@@ -198,12 +211,12 @@ func (ctrl *QuotationController) CreateQuotation(c *fiber.Ctx) error {
 	}
 	middleware.SetActivityDescription(c, fmt.Sprintf(
 		"สร้างใบเสนอราคา %s ให้ %s (%d รายการ รวม %.2f บาท)",
-		quotation.Code, quotation.SignerName, len(quotation.Items), quotation.TotalAmount,
+		visibleQuotationCode(quotation), quotation.SignerName, len(quotation.Items), quotation.TotalAmount,
 	))
 	ctrl.tagQuotation(c, quotation)
 	middleware.SetActivityDetail(c, map[string]any{
 		"kind":         "issue_quotation",
-		"code":         quotation.Code,
+		"code":         visibleQuotationCode(quotation),
 		"quotation_id": quotation.ID,
 		"total_amount": quotation.TotalAmount,
 		"items":        quotationLines(quotation),
@@ -297,9 +310,9 @@ func (ctrl *QuotationController) UpdateQuotationStatus(c *fiber.Ctx) error {
 	}
 	switch req.Status {
 	case 1:
-		middleware.SetActivityDescription(c, fmt.Sprintf("อนุมัติใบเสนอราคา %s", quotation.Code))
+		middleware.SetActivityDescription(c, fmt.Sprintf("อนุมัติใบเสนอราคา %s", visibleQuotationCode(quotation)))
 	case 2:
-		middleware.SetActivityDescription(c, fmt.Sprintf("ยกเลิกใบเสนอราคา %s (%s)", quotation.Code, quotation.RejectReason))
+		middleware.SetActivityDescription(c, fmt.Sprintf("ยกเลิกใบเสนอราคา %s (%s)", visibleQuotationCode(quotation), quotation.RejectReason))
 	}
 	ctrl.tagQuotation(c, quotation)
 	return response.Success(c, "Quotation updated", quotation)
@@ -326,12 +339,12 @@ func (ctrl *QuotationController) UpdateQuotation(c *fiber.Ctx) error {
 		return response.BadRequest(c, err.Error())
 	}
 	middleware.SetActivityDescription(c, fmt.Sprintf(
-		"แก้ไขใบเสนอราคา %s (รวม %.2f บาท)", quotation.Code, quotation.TotalAmount,
+		"แก้ไขใบเสนอราคา %s (รวม %.2f บาท)", visibleQuotationCode(quotation), quotation.TotalAmount,
 	))
 	ctrl.tagQuotation(c, quotation)
 	middleware.SetActivityDetail(c, map[string]any{
 		"kind":         "edit_quotation",
-		"code":         quotation.Code,
+		"code":         visibleQuotationCode(quotation),
 		"quotation_id": quotation.ID,
 		"total_before": beforeTotal(before),
 		"total_amount": quotation.TotalAmount,
@@ -363,7 +376,7 @@ func (ctrl *QuotationController) UpdatePaymentMethod(c *fiber.Ctx) error {
 		payLabel = "ยังไม่ระบุ"
 	}
 	middleware.SetActivityDescription(c, fmt.Sprintf(
-		"ระบุการชำระเงินใบเสนอราคา %s เป็น %s", quotation.Code, payLabel,
+		"ระบุการชำระเงินใบเสนอราคา %s เป็น %s", visibleQuotationCode(quotation), payLabel,
 	))
 	ctrl.tagQuotation(c, quotation)
 	return response.Success(c, "Payment method updated", quotation)
@@ -378,13 +391,13 @@ func (ctrl *QuotationController) DeleteQuotation(c *fiber.Ctx) error {
 	// Fetch first to capture the code for the activity log (DeleteQuotation only returns an error).
 	if quotation, err := ctrl.quotationUsecase.GetQuotationByID(uint(id)); err == nil {
 		middleware.SetActivityDescription(c, fmt.Sprintf(
-			"ลบใบเสนอราคา %s (รวม %.2f บาท)", quotation.Code, quotation.TotalAmount,
+			"ลบใบเสนอราคา %s (รวม %.2f บาท)", visibleQuotationCode(quotation), quotation.TotalAmount,
 		))
 		ctrl.tagQuotation(c, quotation)
 		// Keep the document's contents in the log; after this the quotation is gone.
 		middleware.SetActivityDetail(c, map[string]any{
 			"kind":         "delete_quotation",
-			"code":         quotation.Code,
+			"code":         visibleQuotationCode(quotation),
 			"quotation_id": quotation.ID,
 			"total_amount": quotation.TotalAmount,
 			"items":        quotationLines(quotation),
@@ -481,10 +494,10 @@ func (ctrl *QuotationController) ExportQuotation(c *fiber.Ctx) error {
 	}
 
 	c.Set("Content-Type", "text/csv; charset=utf-8")
-	c.Set("Content-Disposition", fmt.Sprintf("attachment; filename=quotation_%s.csv", quotation.Code))
+	c.Set("Content-Disposition", fmt.Sprintf("attachment; filename=quotation_%s.csv", visibleQuotationCode(quotation)))
 
 	csv := "\xEF\xBB\xBF"
-	csv += "ใบเสนอราคา," + quotation.Code + "\n"
+	csv += "ใบเสนอราคา," + visibleQuotationCode(quotation) + "\n"
 	csv += "วันที่," + quotation.CreatedAt.Format("02/01/2006 15:04") + "\n"
 	if quotation.Store != nil {
 		csv += "ร้าน," + quotation.Store.Name + "\n"

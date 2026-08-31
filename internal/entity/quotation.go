@@ -8,18 +8,22 @@ import (
 )
 
 type Quotation struct {
-	ID           uint    `json:"id" gorm:"primaryKey"`
-	StoreID      *uint   `json:"store_id" gorm:"index"`
-	Store        *Store  `json:"store,omitempty" gorm:"foreignKey:StoreID"`
-	BranchID     *uint   `json:"branch_id" gorm:"index"`
-	Branch       *Branch `json:"branch,omitempty" gorm:"foreignKey:BranchID"`
-	MemberID     *uint   `json:"member_id" gorm:"index"`
-	Member       *Member `json:"member,omitempty" gorm:"foreignKey:MemberID"`
-	CreatedBy    *uint   `json:"created_by" gorm:"index"`
-	Creator      *User   `json:"creator,omitempty" gorm:"foreignKey:CreatedBy"`
-	Code         string  `json:"code"          gorm:"type:varchar(20);uniqueIndex;not null"`
-	Status       int     `json:"status"        gorm:"default:0;index"`
-	IsBill       bool    `json:"is_bill"       gorm:"default:false;index"`
+	ID        uint    `json:"id" gorm:"primaryKey"`
+	StoreID   *uint   `json:"store_id" gorm:"index"`
+	Store     *Store  `json:"store,omitempty" gorm:"foreignKey:StoreID"`
+	BranchID  *uint   `json:"branch_id" gorm:"index"`
+	Branch    *Branch `json:"branch,omitempty" gorm:"foreignKey:BranchID"`
+	MemberID  *uint   `json:"member_id" gorm:"index"`
+	Member    *Member `json:"member,omitempty" gorm:"foreignKey:MemberID"`
+	CreatedBy *uint   `json:"created_by" gorm:"index"`
+	Creator   *User   `json:"creator,omitempty" gorm:"foreignKey:CreatedBy"`
+	Code      string  `json:"code"          gorm:"type:varchar(20);uniqueIndex;not null"`
+	// DisplayCode is the stable, user-facing number. An Admin-issued quotation
+	// linked to an existing bill keeps the originating bill's number in previews,
+	// even though the quotation row has its own internal unique Code.
+	DisplayCode string `json:"display_code,omitempty" gorm:"-"`
+	Status      int    `json:"status"        gorm:"default:0;index"`
+	IsBill      bool   `json:"is_bill"       gorm:"default:false;index"`
 	// Metal tags the whole document (gold|silver|…). Bills are single-metal: a new
 	// sell only accumulates into an open "รอออกบิล" bill of the SAME metal, and the
 	// รายการขายทอง / รายการขายเงิน lists filter on this. Legacy mixed bills read 'gold'.

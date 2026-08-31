@@ -176,6 +176,9 @@ func (ctrl *BillController) CreateBill(c *fiber.Ctx) error {
 	} else {
 		req.CreatedByUserID = middleware.GetUserID(c)
 	}
+	// Prefix follows the person who initiated the document, not the customer it
+	// belongs to and not whoever approves it later.
+	req.AdminCreated = middleware.IsMaster(c)
 
 	bill, err := ctrl.billUsecase.CreateBill(&req)
 	if err != nil {

@@ -2,9 +2,9 @@ package repository
 
 import (
 	"encoding/json"
-	"fmt"
 	"time"
 
+	"jk-api/internal/documentcode"
 	"jk-api/internal/entity"
 
 	"gorm.io/gorm"
@@ -24,7 +24,7 @@ type BillRepository interface {
 	// FindPendingByCreator returns a customer's open "รอออกบิล" bill for the given
 	// metal, if any, so new sells accumulate into it instead of creating separate
 	// bills. Bills are single-metal, so selling silver never lands in a gold bill.
-	FindPendingByCreator(createdBy uint, metal string) (*entity.Quotation, error)
+	FindPendingByCreator(createdBy uint, metal string, adminCreated bool) (*entity.Quotation, error)
 	AppendItems(billID uint, items []entity.QuotationItem) error
 	Update(bill *entity.Quotation) error
 	ReplaceItems(billID uint, items []entity.QuotationItem) error
@@ -37,6 +37,7 @@ type BillRepository interface {
 	// logs, and the issued quotation) so the master can re-issue cleanly.
 	RevertIssuance(id uint) error
 	GenerateCode() (string, error)
+	GenerateAdminCode() (string, error)
 	AddImages(billID uint, urls []string) error
 	CountUnfinished(storeID *uint, branchID *uint, createdBy *uint) (UnfinishedCounts, error)
 	// PartialDeliver accumulates processed_weight and processed_amount for a bill
@@ -103,10 +104,14 @@ func (r *billRepository) Create(bill *entity.Quotation) error {
 	return r.db.Create(bill).Error
 }
 
-func (r *billRepository) FindPendingByCreator(createdBy uint, metal string) (*entity.Quotation, error) {
+func (r *billRepository) FindPendingByCreator(createdBy uint, metal string, adminCreated bool) (*entity.Quotation, error) {
 	var bill entity.Quotation
-	err := r.db.Where("is_bill = ? AND created_by = ? AND status = ? AND metal = ?",
-		true, createdBy, StatusPendingIssue, metal).
+	prefix := "BILL%"
+	if adminCreated {
+		prefix = "P%"
+	}
+	err := r.db.Where("is_bill = ? AND created_by = ? AND status = ? AND metal = ? AND code LIKE ?",
+		true, createdBy, StatusPendingIssue, metal, prefix).
 		Order("id DESC").First(&bill).Error
 	if err != nil {
 		return nil, err
@@ -408,9 +413,11 @@ func (r *billRepository) RevertIssuance(id uint) error {
 }
 
 func (r *billRepository) GenerateCode() (string, error) {
-	var count int64
-	r.db.Unscoped().Model(&entity.Quotation{}).Where("is_bill = ?", true).Count(&count)
-	return fmt.Sprintf("BILL%04d", count+1), nil
+	return documentcode.NextBill(r.db)
+}
+
+func (r *billRepository) GenerateAdminCode() (string, error) {
+	return documentcode.NextAdmin(r.db)
 }
 
 func (r *billRepository) AddImages(billID uint, urls []string) error {

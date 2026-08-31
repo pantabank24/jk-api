@@ -37,40 +37,44 @@ type BillUsecase interface {
 
 type CreateBillRequest struct {
 	// Store/Branch are set from JWT context in the controller — NOT from payload.
-	StoreID         *uint  `json:"-"`
-	BranchID        *uint  `json:"-"`
-	CreatedByUserID uint   `json:"-"`
+	StoreID         *uint `json:"-"`
+	BranchID        *uint `json:"-"`
+	CreatedByUserID uint  `json:"-"`
+	// AdminCreated tracks the actor who initiated the bill, independently from
+	// CreatedByUserID (which is the customer owner during a sell-on-behalf flow).
+	// Master-created documents use P; customer/owner/employee documents use BILL.
+	AdminCreated bool `json:"-"`
 	// CustomerID is only honoured when a staff member (master/owner/employee)
 	// sells on behalf of a customer; the controller validates it and uses it as
 	// the bill's CreatedBy. Ignored for the customer self-service flow.
-	CustomerID      uint   `json:"customer_id"`
+	CustomerID uint `json:"customer_id"`
 	// GoldRound/GoldPriceID record the gold-price round at creation (set in the
 	// controller from the latest gold price) for reporting.
-	GoldRound       string `json:"-"`
-	GoldPriceID     *uint  `json:"-"`
-	Note            string `json:"note"`
+	GoldRound   string `json:"-"`
+	GoldPriceID *uint  `json:"-"`
+	Note        string `json:"note"`
 	// AutoSell marks a bill created by the auto-sell engine. Such a bill always
 	// stands alone (SellOrderID must point at exactly one bill) instead of
 	// accumulating into the customer's open bill the way a manual sell does.
 	// Set by the engine only — never from the payload.
-	AutoSell        bool                    `json:"-"`
-	SellOrderID     *uint                   `json:"-"`
-	Items           []CreateBillItemRequest `json:"items"`
+	AutoSell    bool                    `json:"-"`
+	SellOrderID *uint                   `json:"-"`
+	Items       []CreateBillItemRequest `json:"items"`
 }
 
 type CreateBillItemRequest struct {
-	TypeID   string  `json:"type_id"`
-	TypeName string  `json:"type_name"`
+	TypeID   string `json:"type_id"`
+	TypeName string `json:"type_name"`
 	// Metal tags the item (gold|silver|platinum|palladium); empty = gold. It also
 	// decides which bill the item lands in — bills are single-metal, so items of
 	// different metals in one payload are split into a bill each.
-	Metal    string  `json:"metal"`
-	Plus     float64 `json:"plus"`
-	Price    float64 `json:"price"`
-	Percent  float64 `json:"percent"`
-	Weight   float64 `json:"weight"`
-	PerGram  float64 `json:"per_gram"`
-	Total    float64 `json:"total"`
+	Metal   string  `json:"metal"`
+	Plus    float64 `json:"plus"`
+	Price   float64 `json:"price"`
+	Percent float64 `json:"percent"`
+	Weight  float64 `json:"weight"`
+	PerGram float64 `json:"per_gram"`
+	Total   float64 `json:"total"`
 }
 
 // billItemMetal normalises an item's metal, treating empty as gold (legacy payloads).
@@ -173,7 +177,7 @@ func (u *billUsecase) upsertPendingBill(req *CreateBillRequest, metal string, it
 	// merging it into whatever the customer happens to have open would bury the
 	// automatic sale inside a manual one.
 	if !req.AutoSell {
-		if existing, err := u.billRepo.FindPendingByCreator(req.CreatedByUserID, metal); err == nil && existing != nil {
+		if existing, err := u.billRepo.FindPendingByCreator(req.CreatedByUserID, metal, req.AdminCreated); err == nil && existing != nil {
 			if err := u.billRepo.AppendItems(existing.ID, items); err != nil {
 				return nil, err
 			}
@@ -197,7 +201,13 @@ func (u *billUsecase) upsertPendingBill(req *CreateBillRequest, metal string, it
 		}
 	}
 
-	code, err := u.billRepo.GenerateCode()
+	var code string
+	var err error
+	if req.AdminCreated {
+		code, err = u.billRepo.GenerateAdminCode()
+	} else {
+		code, err = u.billRepo.GenerateCode()
+	}
 	if err != nil {
 		return nil, err
 	}
