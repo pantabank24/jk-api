@@ -2,9 +2,13 @@ package usecase
 
 import (
 	"errors"
+	"fmt"
+	"os"
+	"time"
 
 	"jk-api/internal/entity"
 	"jk-api/internal/module/customer/repository"
+	notificationRepo "jk-api/internal/module/notification/repository"
 	jwtPkg "jk-api/pkg/jwt"
 )
 
@@ -20,6 +24,15 @@ type CustomerUsecase interface {
 	GetDocuments(userID uint) ([]entity.CustomerDocument, error)
 	GetDocumentByID(id uint) (*entity.CustomerDocument, error)
 	DeleteDocument(id uint) error
+	GetActiveDocumentType(id uint) (*entity.DocumentType, error)
+	// ReplaceDocumentsOfType clears out what a customer already has of one type,
+	// files included, so a high-priority type always holds exactly one current copy.
+	ReplaceDocumentsOfType(userID, typeID uint) error
+	// NotifyDocumentReview tells the shop's staff that a customer just put up a
+	// high-priority document that needs checking.
+	NotifyDocumentReview(customer *entity.User, typeName string)
+	ApproveDocument(docID, reviewerID uint) (*entity.CustomerDocument, error)
+	RejectDocument(docID, reviewerID uint, reason string) (*entity.CustomerDocument, error)
 }
 
 type CreateCustomerRequest struct {
@@ -62,10 +75,11 @@ func normalizeBankID(id *uint) *uint {
 
 type customerUsecase struct {
 	customerRepo repository.CustomerRepository
+	notifRepo    notificationRepo.NotificationRepository
 }
 
-func NewCustomerUsecase(customerRepo repository.CustomerRepository) CustomerUsecase {
-	return &customerUsecase{customerRepo: customerRepo}
+func NewCustomerUsecase(customerRepo repository.CustomerRepository, notifRepo notificationRepo.NotificationRepository) CustomerUsecase {
+	return &customerUsecase{customerRepo: customerRepo, notifRepo: notifRepo}
 }
 
 func (u *customerUsecase) CreateCustomer(req *CreateCustomerRequest) (*entity.User, error) {
@@ -203,4 +217,91 @@ func (u *customerUsecase) GetDocumentByID(id uint) (*entity.CustomerDocument, er
 
 func (u *customerUsecase) DeleteDocument(id uint) error {
 	return u.customerRepo.DeleteDocument(id)
+}
+
+func (u *customerUsecase) GetActiveDocumentType(id uint) (*entity.DocumentType, error) {
+	return u.customerRepo.FindActiveDocumentType(id)
+}
+
+func (u *customerUsecase) ReplaceDocumentsOfType(userID, typeID uint) error {
+	existing, err := u.customerRepo.FindDocumentsOfType(userID, typeID)
+	if err != nil {
+		return err
+	}
+	for _, doc := range existing {
+		if err := u.customerRepo.DeleteDocument(doc.ID); err != nil {
+			return err
+		}
+		// Best-effort file removal; the DB row is the source of truth.
+		_ = os.Remove("." + doc.FilePath)
+	}
+	return nil
+}
+
+func (u *customerUsecase) NotifyDocumentReview(customer *entity.User, typeName string) {
+	if customer == nil {
+		return
+	}
+	reviewers, err := u.customerRepo.FindReviewerIDs(customer.StoreID)
+	if err != nil {
+		return
+	}
+	for _, id := range reviewers {
+		_ = u.notifRepo.Create(&entity.Notification{
+			UserID: id,
+			Type:   "document_review",
+			Title:  "มีเอกสารรอตรวจสอบ",
+			Body:   fmt.Sprintf("%s ส่ง%sเข้ามา กรุณาตรวจสอบและอนุมัติ", customer.Name, typeName),
+		})
+	}
+}
+
+func (u *customerUsecase) ApproveDocument(docID, reviewerID uint) (*entity.CustomerDocument, error) {
+	return u.reviewDocument(docID, reviewerID, entity.ApprovalApproved, "")
+}
+
+func (u *customerUsecase) RejectDocument(docID, reviewerID uint, reason string) (*entity.CustomerDocument, error) {
+	return u.reviewDocument(docID, reviewerID, entity.ApprovalRejected, reason)
+}
+
+func (u *customerUsecase) reviewDocument(docID, reviewerID uint, status, reason string) (*entity.CustomerDocument, error) {
+	doc, err := u.customerRepo.FindDocumentByID(docID)
+	if err != nil {
+		return nil, errors.New("ไม่พบเอกสาร")
+	}
+	if doc.DocumentType == nil || !doc.DocumentType.IsHighPriority {
+		return nil, errors.New("เอกสารนี้ไม่ต้องตรวจสอบ")
+	}
+	now := time.Now()
+	doc.ApprovalStatus = status
+	doc.ApprovedBy = &reviewerID
+	doc.ApprovedAt = &now
+	doc.RejectReason = reason
+	if err := u.customerRepo.UpdateDocument(doc); err != nil {
+		return nil, err
+	}
+
+	// The customer only ever sees the outcome here, so tell them either way —
+	// a rejection that goes unannounced looks like nothing happened.
+	typeName := doc.DocumentType.Name
+	if status == entity.ApprovalApproved {
+		_ = u.notifRepo.Create(&entity.Notification{
+			UserID: doc.UserID,
+			Type:   "document_approved",
+			Title:  "เอกสารผ่านการตรวจสอบ",
+			Body:   fmt.Sprintf("%sของคุณผ่านการตรวจสอบแล้ว", typeName),
+		})
+	} else {
+		body := fmt.Sprintf("%sของคุณไม่ผ่านการตรวจสอบ กรุณาอัปโหลดใหม่", typeName)
+		if reason != "" {
+			body = fmt.Sprintf("%sของคุณไม่ผ่านการตรวจสอบ (%s) กรุณาอัปโหลดใหม่", typeName, reason)
+		}
+		_ = u.notifRepo.Create(&entity.Notification{
+			UserID: doc.UserID,
+			Type:   "document_rejected",
+			Title:  "เอกสารไม่ผ่านการตรวจสอบ",
+			Body:   body,
+		})
+	}
+	return doc, nil
 }

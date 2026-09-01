@@ -22,13 +22,16 @@ type User struct {
 	Address   string  `json:"address" gorm:"type:text;default:''"`
 	TaxID     string  `json:"tax_id" gorm:"type:text;default:''"`
 	// Payout account (customers). BankID is nullable — a customer may have no bank on file.
-	BankID          *uint          `json:"bank_id" gorm:"index"`
-	Bank            *Bank          `json:"bank,omitempty" gorm:"foreignKey:BankID"`
-	BankAccountNo   string         `json:"bank_account_no" gorm:"type:text;default:''"`
-	BankAccountName string         `json:"bank_account_name" gorm:"type:text;default:''"`
-	Avatar          string         `json:"avatar" gorm:"type:varchar(500);default:''"`
-	IsActive        bool           `json:"is_active" gorm:"default:true"`
-	CreatedAt       time.Time      `json:"created_at"`
-	UpdatedAt       time.Time      `json:"updated_at"`
-	DeletedAt       gorm.DeletedAt `json:"-" gorm:"index"`
+	BankID          *uint  `json:"bank_id" gorm:"index"`
+	Bank            *Bank  `json:"bank,omitempty" gorm:"foreignKey:BankID"`
+	BankAccountNo   string `json:"bank_account_no" gorm:"type:text;default:''"`
+	BankAccountName string `json:"bank_account_name" gorm:"type:text;default:''"`
+	Avatar          string `json:"avatar" gorm:"type:varchar(500);default:''"`
+	// Derived from the customer's high-priority documents, not stored. Empty on
+	// responses that never computed it (staff accounts, nested user objects).
+	VerificationStatus string         `json:"verification_status,omitempty" gorm:"-"`
+	IsActive           bool           `json:"is_active" gorm:"default:true"`
+	CreatedAt          time.Time      `json:"created_at"`
+	UpdatedAt          time.Time      `json:"updated_at"`
+	DeletedAt          gorm.DeletedAt `json:"-" gorm:"index"`
 }

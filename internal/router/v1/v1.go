@@ -53,6 +53,7 @@ func SetupV1Routes(api fiber.Router, db *gorm.DB, cfg *config.Config, cronSvc *s
 	SetupNewsRoutes(v1, db, cfg)
 	SetupLineRoutes(v1, db, cfg)
 	SetupBankRoutes(v1, db, cfg)
+	SetupDocumentTypeRoutes(v1, db, cfg)
 	SetupSellOrderRoutes(v1, db, cfg, sellEngine)
 }
 

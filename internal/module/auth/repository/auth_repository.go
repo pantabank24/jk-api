@@ -2,6 +2,7 @@ package repository
 
 import (
 	"jk-api/internal/entity"
+	"jk-api/internal/verification"
 
 	"gorm.io/gorm"
 )
@@ -40,6 +41,9 @@ func (r *authRepository) FindByIDWithRole(id uint) (*entity.User, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Feeds the verify badge on the customer's own home and โปรไฟล์ของฉัน screens.
+	// Staff have no high-priority documents, so they come back as "none".
+	user.VerificationStatus = verification.StatusOf(r.db, user.ID)
 	return &user, nil
 }
 

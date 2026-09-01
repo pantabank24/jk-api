@@ -6,6 +6,7 @@ import (
 
 	"jk-api/internal/documentcode"
 	"jk-api/internal/entity"
+	"jk-api/internal/verification"
 
 	"gorm.io/gorm"
 )
@@ -156,6 +157,34 @@ func (r *billRepository) scope(f BillFilter) *gorm.DB {
 	return query
 }
 
+// listOrder decides what "newest" means for the tab being shown. A bill's own id
+// is the order it was FIRST opened, which is the wrong answer for the two working
+// tabs: a รอออกบิล bill is reused (see upsertPendingBill) and keeps its id while
+// the customer keeps selling into it, and a รอตรวจบิล bill was opened long before
+// staff got round to issuing it. Both tabs therefore sort by the event the person
+// reading the list is waiting on, with id as the tie-break.
+func (r *billRepository) listOrder(f BillFilter) string {
+	if f.Status == nil {
+		return "quotations.id DESC"
+	}
+	switch *f.Status {
+	case StatusPendingIssue:
+		// What the customer last sent in. Falls back to the bill's own date for a
+		// bill whose items were all removed.
+		return `COALESCE((SELECT MAX(qi.created_at) FROM quotation_items qi
+			WHERE qi.quotation_id = quotations.id AND qi.deleted_at IS NULL),
+			quotations.created_at) DESC, quotations.id DESC`
+	case StatusPendingReview:
+		// When staff issued it — the issued quotation's own created_at, which never
+		// moves again. Bills issued through the plain /issue route carry no
+		// quotation, so updated_at (written by that transition) stands in.
+		return `COALESCE((SELECT iq.created_at FROM quotations iq
+			WHERE iq.id = quotations.issued_quotation_id AND iq.deleted_at IS NULL),
+			quotations.updated_at) DESC, quotations.id DESC`
+	}
+	return "quotations.id DESC"
+}
+
 func (r *billRepository) FindAll(f BillFilter, page, limit int) ([]entity.Quotation, int64, error) {
 	var bills []entity.Quotation
 	var total int64
@@ -167,7 +196,16 @@ func (r *billRepository) FindAll(f BillFilter, page, limit int) ([]entity.Quotat
 	// was rolled into; its items aren't needed until the detail view.
 	err := query.Preload("Items").Preload("Images").Preload("Member").Preload("Creator").
 		Preload("Store").Preload("Branch").Preload("IssuedQuotation").
-		Offset(offset).Limit(limit).Order("quotations.id DESC").Find(&bills).Error
+		Offset(offset).Limit(limit).Order(r.listOrder(f)).Find(&bills).Error
+	if err == nil {
+		// The list groups bills under the customer who sent them, and that name
+		// carries a verify badge — one extra query for the whole page.
+		creators := make([]*entity.User, 0, len(bills))
+		for i := range bills {
+			creators = append(creators, bills[i].Creator)
+		}
+		verification.ApplyToUsers(r.db, creators)
+	}
 	return bills, total, err
 }
 
@@ -241,6 +279,7 @@ func (r *billRepository) FindByID(id uint) (*entity.Quotation, error) {
 	if err != nil {
 		return nil, err
 	}
+	verification.ApplyToUsers(r.db, []*entity.User{bill.Creator})
 	return &bill, nil
 }
 

@@ -14,6 +14,7 @@ import (
 	"jk-api/internal/module/bill/repository"
 	"jk-api/internal/module/bill/usecase"
 	"jk-api/internal/service"
+	"jk-api/internal/verification"
 	"jk-api/pkg/response"
 
 	"github.com/gofiber/fiber/v2"
@@ -422,6 +423,9 @@ func (ctrl *BillController) ListSellCustomers(c *fiber.Ctx) error {
 	if err := q.Order("users.name ASC").Limit(50).Find(&customers).Error; err != nil {
 		return response.InternalServerError(c, err.Error())
 	}
+	// The picker shows a verify badge beside each name, so staff can see at a glance
+	// whose identity papers are still outstanding before selling on their behalf.
+	verification.Apply(ctrl.db, customers)
 	return response.Success(c, "ok", customers)
 }
 

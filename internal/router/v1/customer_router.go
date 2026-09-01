@@ -6,6 +6,7 @@ import (
 	customerCtrl "jk-api/internal/module/customer/controller"
 	customerRepo "jk-api/internal/module/customer/repository"
 	customerUC "jk-api/internal/module/customer/usecase"
+	notifRepo "jk-api/internal/module/notification/repository"
 
 	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
@@ -13,7 +14,7 @@ import (
 
 func SetupCustomerRoutes(v1 fiber.Router, db *gorm.DB, cfg *config.Config) {
 	cRepo := customerRepo.NewCustomerRepository(db)
-	uc := customerUC.NewCustomerUsecase(cRepo)
+	uc := customerUC.NewCustomerUsecase(cRepo, notifRepo.NewNotificationRepository(db))
 	ctrl := customerCtrl.NewCustomerController(uc)
 
 	customers := v1.Group("/customers", middleware.AuthMiddleware(cfg))
@@ -27,9 +28,22 @@ func SetupCustomerRoutes(v1 fiber.Router, db *gorm.DB, cfg *config.Config) {
 		// Customer profile picture
 		customers.Post("/:id/avatar", middleware.RequirePermission(db, "customers.update"), ctrl.UploadAvatar)
 
+		// Self-service documents for the logged-in customer (หน้าโปรไฟล์ของฉัน).
+		// Registered before the /:id twins so "me" is not swallowed by the param
+		// route, and permission-free because customers hold no customers.* rights —
+		// the handlers scope every row to the token's own user id.
+		customers.Get("/me/documents",           ctrl.GetMyDocuments)
+		customers.Post("/me/documents",          ctrl.UploadMyDocuments)
+		customers.Delete("/me/documents/:docId", ctrl.DeleteMyDocument)
+
 		// Customer documents (images / pdf / docx / xlsx)
 		customers.Get("/:id/documents",           middleware.RequirePermission(db, "customers.read"),   ctrl.GetDocuments)
 		customers.Post("/:id/documents",          middleware.RequirePermission(db, "customers.update"), ctrl.UploadDocuments)
 		customers.Delete("/:id/documents/:docId", middleware.RequirePermission(db, "customers.update"), ctrl.DeleteDocument)
+
+		// Reviewing identity documents — its own permission, held by employees too
+		// (see migration 000094), since they are the ones the notification reaches.
+		customers.Put("/:id/documents/:docId/approve", middleware.RequirePermission(db, "customers.approve_documents"), ctrl.ApproveDocument)
+		customers.Put("/:id/documents/:docId/reject",  middleware.RequirePermission(db, "customers.approve_documents"), ctrl.RejectDocument)
 	}
 }
