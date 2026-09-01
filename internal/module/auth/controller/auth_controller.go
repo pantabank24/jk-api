@@ -66,6 +66,41 @@ func (ctrl *AuthController) GetMe(c *fiber.Ctx) error {
 	return response.Success(c, "User info retrieved", result)
 }
 
+// AcceptPDPAConsent records that the customer read the privacy notice. The body
+// is ignored on purpose — the version and text being acknowledged are the
+// server's current ones, and the evidence (IP, user agent) is taken from the
+// request itself rather than from anything the client could choose to send.
+func (ctrl *AuthController) AcceptPDPAConsent(c *fiber.Ctx) error {
+	userID := middleware.GetUserID(c)
+	if err := ctrl.authUsecase.AcceptPDPA(userID, c.IP(), c.Get("User-Agent")); err != nil {
+		return response.BadRequest(c, err.Error())
+	}
+	return response.Success(c, "บันทึกแล้ว", nil)
+}
+
+// GetMarketingConsent drives the toggle on the customer's own profile.
+func (ctrl *AuthController) GetMarketingConsent(c *fiber.Ctx) error {
+	status := ctrl.authUsecase.MarketingConsent(middleware.GetUserID(c))
+	return response.Success(c, "Marketing consent", status)
+}
+
+// UpdateMarketingConsent gives or withdraws it. PDPA expects withdrawing to be
+// as easy as giving, which is why this is a plain toggle on a page the customer
+// already visits rather than a request they have to make to the shop.
+func (ctrl *AuthController) UpdateMarketingConsent(c *fiber.Ctx) error {
+	var req struct {
+		Granted bool `json:"granted"`
+	}
+	if err := c.BodyParser(&req); err != nil {
+		return response.BadRequest(c, "Invalid request body")
+	}
+	userID := middleware.GetUserID(c)
+	if err := ctrl.authUsecase.SetMarketingConsent(userID, req.Granted, c.IP(), c.Get("User-Agent")); err != nil {
+		return response.BadRequest(c, err.Error())
+	}
+	return response.Success(c, "บันทึกแล้ว", ctrl.authUsecase.MarketingConsent(userID))
+}
+
 func (ctrl *AuthController) UpdateProfile(c *fiber.Ctx) error {
 	userID := middleware.GetUserID(c)
 

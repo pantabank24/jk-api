@@ -34,11 +34,7 @@ func main() {
 	}
 
 	// Create Fiber app
-	app := fiber.New(fiber.Config{
-		AppName:      cfg.AppName,
-		ErrorHandler: customErrorHandler,
-		BodyLimit:    10 * 1024 * 1024, // 10MB for file uploads
-	})
+	app := fiber.New(fiberConfig(cfg))
 
 	// Global middleware
 	app.Use(recover.New())
@@ -104,4 +100,37 @@ func customErrorHandler(c *fiber.Ctx, err error) error {
 		"success": false,
 		"message": err.Error(),
 	})
+}
+
+// fiberConfig builds the server's configuration.
+//
+// The app never sees a client directly: nginx on the host proxies to the
+// container's published port, so the socket's peer address is the docker
+// bridge gateway. Left alone, c.IP() records that gateway for every login,
+// every activity log and every PDPA consent — the same 172.x for everyone,
+// which is worthless as evidence.
+//
+// The three settings only work together:
+//
+//	ProxyHeader             — read the client from X-Forwarded-For instead
+//	EnableTrustedProxyCheck — but only when the peer is a proxy we listed,
+//	                          otherwise anyone could post their own header
+//	                          and sign a consent under a forged IP
+//	EnableIPValidation      — X-Forwarded-For is a LIST ("client, proxy1").
+//	                          Without this, Fiber stores the raw header
+//	                          verbatim; with it, the first valid IP — the
+//	                          client — is what comes back.
+//
+// If the header is missing or the peer is untrusted, c.IP() falls back to
+// the socket address, so this can only ever improve on what was stored.
+func fiberConfig(cfg *config.Config) fiber.Config {
+	return fiber.Config{
+		AppName:                 cfg.AppName,
+		ErrorHandler:            customErrorHandler,
+		BodyLimit:               10 * 1024 * 1024, // 10MB for file uploads
+		ProxyHeader:             fiber.HeaderXForwardedFor,
+		EnableTrustedProxyCheck: true,
+		TrustedProxies:          cfg.TrustedProxyList(),
+		EnableIPValidation:      true,
+	}
 }

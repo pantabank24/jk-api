@@ -37,5 +37,11 @@ func SetupAuthRoutes(v1 fiber.Router, db *gorm.DB, cfg *config.Config, lRepo log
 		protected.Put("/profile", ctrl.UpdateProfile)
 		protected.Post("/profile/avatar", ctrl.UploadAvatar)
 		protected.Post("/change-password", ctrl.ChangePassword)
+		// ความยินยอม PDPA — auth-only, ไม่ผูก permission เพราะเป็นการกระทำของเจ้าของ
+		// บัญชีต่อบัญชีตัวเอง ไม่ใช่สิทธิ์ที่ร้านมอบให้
+		protected.Post("/pdpa-consent", ctrl.AcceptPDPAConsent)
+		// ความยินยอมด้านการตลาด — ถอนได้ทุกเมื่อจากหน้าโปรไฟล์ของเจ้าตัว
+		protected.Get("/marketing-consent", ctrl.GetMarketingConsent)
+		protected.Put("/marketing-consent", ctrl.UpdateMarketingConsent)
 	}
 }

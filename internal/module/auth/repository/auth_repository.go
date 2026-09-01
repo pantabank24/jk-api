@@ -5,6 +5,7 @@ import (
 	"jk-api/internal/verification"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type AuthRepository interface {
@@ -14,6 +15,11 @@ type AuthRepository interface {
 	GetMemberCreditsByUserID(userID uint) (float64, bool)
 	EmailExistsForOtherUser(email string, excludeID uint) (bool, error)
 	UpdateProfile(userID uint, fields map[string]interface{}) error
+	GetConfigValue(key string) string
+	HasConsent(userID uint, kind string, version int) bool
+	CreateAcknowledgement(consent *entity.UserConsent) error
+	AppendConsent(consent *entity.UserConsent) error
+	LatestConsent(userID uint, kind string) (*entity.UserConsent, bool)
 }
 
 type authRepository struct {
@@ -83,4 +89,64 @@ func (r *authRepository) GetPermissionsByRoleID(roleID uint) ([]string, error) {
 		Where("role_permissions.role_id = ?", roleID).
 		Pluck("permissions.code", &permissions).Error
 	return permissions, err
+}
+
+// GetConfigValue reads one system_configs row. The PDPA text and its version are
+// shop settings, not auth data, but resolving "does this user still need to
+// consent?" needs both halves in one place — and going through the config module
+// would make the auth package depend on it for two string lookups.
+func (r *authRepository) GetConfigValue(key string) string {
+	var cfg entity.SystemConfig
+	if err := r.db.Where("key = ?", key).First(&cfg).Error; err != nil {
+		return ""
+	}
+	return cfg.Value
+}
+
+// HasConsent answers whether the user has already accepted this exact version.
+// A newer version means the row is absent and the modal comes back, which is the
+// whole mechanism behind "แก้ข้อความแล้วต้องยอมรับใหม่".
+func (r *authRepository) HasConsent(userID uint, kind string, version int) bool {
+	var count int64
+	err := r.db.Model(&entity.UserConsent{}).
+		Where("user_id = ? AND consent_type = ? AND version = ?", userID, kind, version).
+		Count(&count).Error
+	return err == nil && count > 0
+}
+
+// CreateAcknowledgement records that the user read one version of the notice.
+// A double tap — or a second tab left open on the same modal — collapses into
+// the row that is already there rather than filing a second piece of evidence
+// for the same act. The conflict target repeats the partial index's WHERE from
+// migration 000098; Postgres will not match a partial index without it.
+func (r *authRepository) CreateAcknowledgement(consent *entity.UserConsent) error {
+	return r.db.Clauses(clause.OnConflict{
+		Columns: []clause.Column{
+			{Name: "user_id"}, {Name: "consent_type"}, {Name: "version"},
+		},
+		TargetWhere: clause.Where{Exprs: []clause.Expression{
+			clause.Eq{Column: "consent_type", Value: "pdpa"},
+		}},
+		DoNothing: true,
+	}).Create(consent).Error
+}
+
+// AppendConsent adds a row to the consent log without collapsing anything —
+// used by the withdrawable consents, where "granted, then withdrawn, then
+// granted again" is three facts and not one.
+func (r *authRepository) AppendConsent(consent *entity.UserConsent) error {
+	return r.db.Create(consent).Error
+}
+
+// LatestConsent returns the most recent row for one consent type, which is what
+// the current state is: the newest row's Granted. ok is false when the user has
+// never answered either way.
+func (r *authRepository) LatestConsent(userID uint, kind string) (*entity.UserConsent, bool) {
+	var row entity.UserConsent
+	err := r.db.Where("user_id = ? AND consent_type = ?", userID, kind).
+		Order("id DESC").First(&row).Error
+	if err != nil {
+		return nil, false
+	}
+	return &row, true
 }
