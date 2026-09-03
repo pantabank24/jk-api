@@ -22,6 +22,8 @@ type QuotationUsecase interface {
 	SetPaymentMethod(id uint, method string) (*entity.Quotation, error)
 	DeleteQuotation(id uint) error
 	AddImages(id uint, urls []string, imageType string) error
+	GetPendingAfterMelt(storeID *uint, branchID *uint, createdBy *uint) ([]entity.Quotation, error)
+	ClearPendingAfterMelt(ids []uint, storeID *uint, branchID *uint, createdBy *uint) (int64, error)
 	// PreviewCreditReset/ResetMemberCredit bulk-refund the credit charged on a
 	// member's approved-but-not-yet-refunded quotations (see ResetMemberCredit).
 	PreviewCreditReset(memberID uint) (*CreditResetPreview, error)
@@ -659,6 +661,14 @@ func (u *quotationUsecase) refundCredits(quotation *entity.Quotation, descriptio
 
 func (u *quotationUsecase) AddImages(id uint, urls []string, imageType string) error {
 	return u.quotationRepo.AddImages(id, urls, imageType)
+}
+
+func (u *quotationUsecase) GetPendingAfterMelt(storeID *uint, branchID *uint, createdBy *uint) ([]entity.Quotation, error) {
+	return u.quotationRepo.FindPendingAfterMelt(storeID, branchID, createdBy)
+}
+
+func (u *quotationUsecase) ClearPendingAfterMelt(ids []uint, storeID *uint, branchID *uint, createdBy *uint) (int64, error) {
+	return u.quotationRepo.ClearPendingAfterMelt(ids, storeID, branchID, createdBy)
 }
 
 func (u *quotationUsecase) PreviewCreditReset(memberID uint) (*CreditResetPreview, error) {

@@ -21,6 +21,8 @@ type QuotationRepository interface {
 	GenerateCode() (string, error)
 	GenerateBillCode() (string, error)
 	AddImages(quotationID uint, urls []string, imageType string) error
+	FindPendingAfterMelt(storeID *uint, branchID *uint, createdBy *uint) ([]entity.Quotation, error)
+	ClearPendingAfterMelt(ids []uint, storeID *uint, branchID *uint, createdBy *uint) (int64, error)
 	// MarkBillIssued advances a customer bill (a quotation row with is_bill=true)
 	// to "รอตรวจบิล" (status 11) and links it to the master-issued quotation.
 	MarkBillIssued(billID, quotationID uint) error
@@ -100,6 +102,53 @@ func (r *quotationRepository) FindByID(id uint) (*entity.Quotation, error) {
 		quotation.DisplayCode = code
 	}
 	return &quotation, nil
+}
+
+// pendingAfterMeltQuery is shared by listing and clearing so "เคลียร์ทั้งหมด"
+// can never affect a quotation outside the caller's store/branch/user scope.
+func pendingAfterMeltQuery(db *gorm.DB, storeID *uint, branchID *uint, createdBy *uint) *gorm.DB {
+	query := db.Model(&entity.Quotation{}).
+		Where("quotations.is_bill = ?", false).
+		Where("quotations.status <> ?", 2).
+		Where("quotations.after_melt_cleared_at IS NULL").
+		Where(`NOT EXISTS (
+			SELECT 1 FROM quotation_images qi
+			WHERE qi.quotation_id = quotations.id
+			  AND qi.type = ?
+			  AND qi.deleted_at IS NULL
+		)`, "after_melt")
+	if storeID != nil {
+		query = query.Where("quotations.store_id = ?", *storeID)
+	}
+	if branchID != nil {
+		query = query.Where("quotations.branch_id = ?", *branchID)
+	}
+	if createdBy != nil {
+		query = query.Where("quotations.created_by = ?", *createdBy)
+	}
+	return query
+}
+
+func (r *quotationRepository) FindPendingAfterMelt(storeID *uint, branchID *uint, createdBy *uint) ([]entity.Quotation, error) {
+	var quotations []entity.Quotation
+	err := pendingAfterMeltQuery(r.db, storeID, branchID, createdBy).
+		Preload("Items").Preload("Images").Preload("Member").
+		Preload("Creator").Preload("Store").Preload("Branch").
+		Order("quotations.created_at ASC").Find(&quotations).Error
+	if err == nil {
+		err = r.attachDisplayCodes(quotations)
+	}
+	return quotations, err
+}
+
+func (r *quotationRepository) ClearPendingAfterMelt(ids []uint, storeID *uint, branchID *uint, createdBy *uint) (int64, error) {
+	query := pendingAfterMeltQuery(r.db, storeID, branchID, createdBy)
+	if len(ids) > 0 {
+		query = query.Where("quotations.id IN ?", ids)
+	}
+	now := time.Now()
+	result := query.Update("after_melt_cleared_at", now)
+	return result.RowsAffected, result.Error
 }
 
 type displayCodeRow struct {

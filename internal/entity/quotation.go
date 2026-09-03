@@ -83,6 +83,10 @@ type Quotation struct {
 	// quotation itself so it survives regardless of partial-ticking / delivery logs.
 	Page1Items json.RawMessage  `json:"page1_items,omitempty" gorm:"type:jsonb"`
 	Images     []QuotationImage `json:"images,omitempty" gorm:"foreignKey:QuotationID"`
+	// AfterMeltClearedAt removes a quotation from the after-melt upload queue
+	// without pretending that a photo was uploaded. Nil means it still requires
+	// an after-melt photo unless one already exists in Images.
+	AfterMeltClearedAt *time.Time `json:"after_melt_cleared_at,omitempty" gorm:"index"`
 	CreatedAt  time.Time        `json:"created_at"`
 	UpdatedAt  time.Time        `json:"updated_at"`
 	// StatusChangedAt คือเวลาที่ Status ถูกเปลี่ยนครั้งล่าสุด — คนละอย่างกับ UpdatedAt
