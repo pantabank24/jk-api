@@ -3,6 +3,7 @@ package repository
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"jk-api/internal/documentcode"
 	"jk-api/internal/entity"
@@ -219,7 +220,11 @@ func (r *quotationRepository) Delete(id uint) error {
 func (r *quotationRepository) MarkBillIssued(billID, quotationID uint) error {
 	return r.db.Model(&entity.Quotation{}).
 		Where("id = ? AND is_bill = ?", billID, true).
-		Updates(map[string]interface{}{"status": 11, "issued_quotation_id": quotationID}).Error
+		Updates(map[string]interface{}{
+			"status":              11,
+			"issued_quotation_id": quotationID,
+			"status_changed_at":   time.Now(),
+		}).Error
 }
 
 func (r *quotationRepository) FindBillsByIDs(ids []uint) ([]entity.Quotation, error) {

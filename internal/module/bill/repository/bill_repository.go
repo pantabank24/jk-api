@@ -152,7 +152,16 @@ func (r *billRepository) scope(f BillFilter) *gorm.DB {
 		query = query.Where("quotations.metal = ?", *f.Metal)
 	}
 	if f.Search != "" {
-		query = query.Where("quotations.code ILIKE ?", "%"+f.Search+"%")
+		// ค้นหาได้ทั้งเลขที่บิลและชื่อ — ชื่อที่ลิสต์แสดงคือชื่อลูกค้าที่เปิดบิล (Creator)
+		// ส่วน signer_name คือชื่อผู้เซ็นบนใบที่ออกแล้ว ซึ่งอาจต่างจากชื่อบัญชี.
+		// ใช้ EXISTS แทน JOIN เพราะ scope() ถูกนำไปนับ/รวมยอดและใช้เป็น subquery ต่อ —
+		// join กับ users จะไปกวน COUNT(DISTINCT ...) และตัดบิลที่ created_by ว่างทิ้ง.
+		like := "%" + f.Search + "%"
+		query = query.Where(
+			`quotations.code ILIKE ? OR quotations.signer_name ILIKE ? OR EXISTS (
+				SELECT 1 FROM users u
+				WHERE u.id = quotations.created_by AND u.deleted_at IS NULL AND u.name ILIKE ?)`,
+			like, like, like)
 	}
 	return query
 }
@@ -169,20 +178,23 @@ func (r *billRepository) listOrder(f BillFilter) string {
 	}
 	switch *f.Status {
 	case StatusPendingIssue:
-		// What the customer last sent in. Falls back to the bill's own date for a
-		// bill whose items were all removed.
+		// What the customer last sent in. NOT status_changed_at: a bill sits in
+		// รอออกบิล while the customer keeps selling into it, so its status stamp is
+		// frozen at the moment it was opened while the pile keeps growing — the
+		// staff member reading this tab is waiting on the newest item, not the bill.
+		// Falls back to the bill's own date for a bill whose items were all removed.
 		return `COALESCE((SELECT MAX(qi.created_at) FROM quotation_items qi
 			WHERE qi.quotation_id = quotations.id AND qi.deleted_at IS NULL),
 			quotations.created_at) DESC, quotations.id DESC`
-	case StatusPendingReview:
-		// When staff issued it — the issued quotation's own created_at, which never
-		// moves again. Bills issued through the plain /issue route carry no
-		// quotation, so updated_at (written by that transition) stands in.
-		return `COALESCE((SELECT iq.created_at FROM quotations iq
-			WHERE iq.id = quotations.issued_quotation_id AND iq.deleted_at IS NULL),
-			quotations.updated_at) DESC, quotations.id DESC`
 	}
-	return "quotations.id DESC"
+	// Every other tab (รอตรวจบิล, สำเร็จ, ยกเลิก, เคลียร์แล้ว) is a resting place a bill
+	// was PUT INTO, so the thing to sort by is when that happened. Neither of the
+	// two obvious columns says it: `id` is the order bills were first opened (a bill
+	// opened in July but cleared today would sit at the very bottom of เคลียร์แล้ว),
+	// and `updated_at` moves on any later write at all — editing a note or logging a
+	// delivery would shuffle a closed bill back to the top. status_changed_at is
+	// stamped only where Status is assigned (see entity.Quotation.TouchStatus).
+	return "quotations.status_changed_at DESC NULLS LAST, quotations.id DESC"
 }
 
 func (r *billRepository) FindAll(f BillFilter, page, limit int) ([]entity.Quotation, int64, error) {
@@ -408,7 +420,10 @@ func (r *billRepository) RevertIssuance(id uint) error {
 		// just move it back to รอออกบิล.
 		if bill.IssuedQuotationID == nil {
 			return tx.Model(&entity.Quotation{}).Where("id = ?", id).
-				Update("status", StatusPendingIssue).Error
+				Updates(map[string]interface{}{
+					"status":            StatusPendingIssue,
+					"status_changed_at": time.Now(),
+				}).Error
 		}
 
 		qid := *bill.IssuedQuotationID
@@ -425,6 +440,7 @@ func (r *billRepository) RevertIssuance(id uint) error {
 		if err := tx.Model(&entity.Quotation{}).Where("id IN ?", billIDs).
 			Updates(map[string]interface{}{
 				"status":              StatusPendingIssue,
+				"status_changed_at":   time.Now(),
 				"issued_quotation_id": nil,
 				"processed_weight":    0,
 				"processed_amount":    0,
@@ -591,7 +607,11 @@ func (r *billRepository) ClearBills(storeID *uint, billIDs []uint) (int64, error
 			}
 		}
 
-		res := tx.Model(&entity.Quotation{}).Where("id IN ?", ids).Update("status", StatusCleared)
+		res := tx.Model(&entity.Quotation{}).Where("id IN ?", ids).
+			Updates(map[string]interface{}{
+				"status":            StatusCleared,
+				"status_changed_at": time.Now(),
+			})
 		if res.Error != nil {
 			return res.Error
 		}

@@ -14,7 +14,7 @@ import (
 
 type CustomerUsecase interface {
 	CreateCustomer(req *CreateCustomerRequest) (*entity.User, error)
-	GetAllCustomers(page, limit int, storeID, branchID *uint, search string) ([]entity.User, int64, error)
+	GetAllCustomers(page, limit int, storeID *uint, search string) ([]entity.User, int64, error)
 	GetCustomerByID(id uint) (*entity.User, error)
 	UpdateCustomer(id uint, req *UpdateCustomerRequest) (*entity.User, error)
 	UpdateAvatar(id uint, avatar string) (*entity.User, error)
@@ -36,6 +36,9 @@ type CustomerUsecase interface {
 }
 
 type CreateCustomerRequest struct {
+	// ร้านที่ลูกค้าสังกัด — ตั้งโดย controller จาก role ของผู้เรียก (staff ใช้ร้านตัวเอง,
+	// master เลือกเอง) ไม่ได้รับตรงจาก body ของ client
+	StoreID         *uint  `json:"-"`
 	Name            string `json:"name" validate:"required"`
 	Email           string `json:"email" validate:"required,email"`
 	Password        string `json:"password" validate:"required,min=6"`
@@ -49,6 +52,8 @@ type CreateCustomerRequest struct {
 }
 
 type UpdateCustomerRequest struct {
+	// ย้ายลูกค้าข้ามร้าน — controller ยอมให้เฉพาะ master เท่านั้น
+	StoreID   *uint   `json:"-"`
 	Name      string  `json:"name"`
 	Email     string  `json:"email" validate:"omitempty,email"`
 	Password  string  `json:"password"`
@@ -97,7 +102,22 @@ func (u *customerUsecase) CreateCustomer(req *CreateCustomerRequest) (*entity.Us
 		return nil, errors.New("failed to hash password")
 	}
 
+	// ลูกค้าต้องสังกัดร้าน ไม่งั้นจะไม่โผล่ในลิสต์ของ owner/employee ร้านไหนเลย.
+	// ร้านเดียวก็ไม่ต้องให้ระบุ — เดาให้ได้ตัวเดียวอยู่แล้ว
+	storeID := req.StoreID
+	if storeID == nil {
+		sole, err := u.customerRepo.FindSoleStoreID()
+		if err != nil {
+			return nil, err
+		}
+		if sole == nil {
+			return nil, errors.New("กรุณาระบุร้านของลูกค้า")
+		}
+		storeID = sole
+	}
+
 	user := &entity.User{
+		StoreID:         storeID,
 		Name:            req.Name,
 		Email:           req.Email,
 		Password:        hashed,
@@ -117,14 +137,14 @@ func (u *customerUsecase) CreateCustomer(req *CreateCustomerRequest) (*entity.Us
 	return u.customerRepo.FindByID(user.ID)
 }
 
-func (u *customerUsecase) GetAllCustomers(page, limit int, storeID, branchID *uint, search string) ([]entity.User, int64, error) {
+func (u *customerUsecase) GetAllCustomers(page, limit int, storeID *uint, search string) ([]entity.User, int64, error) {
 	if page < 1 {
 		page = 1
 	}
 	if limit < 1 || limit > 100 {
 		limit = 10
 	}
-	return u.customerRepo.FindAll(page, limit, storeID, branchID, search)
+	return u.customerRepo.FindAll(page, limit, storeID, search)
 }
 
 func (u *customerUsecase) GetCustomerByID(id uint) (*entity.User, error) {
@@ -137,6 +157,9 @@ func (u *customerUsecase) UpdateCustomer(id uint, req *UpdateCustomerRequest) (*
 		return nil, errors.New("customer not found")
 	}
 
+	if req.StoreID != nil {
+		user.StoreID = req.StoreID
+	}
 	if req.Name != "" {
 		user.Name = req.Name
 	}
@@ -242,7 +265,10 @@ func (u *customerUsecase) NotifyDocumentReview(customer *entity.User, typeName s
 	if customer == nil {
 		return
 	}
-	reviewers, err := u.customerRepo.FindReviewerIDs(customer.StoreID)
+	// ตั้งใจส่งถึง master คนเดียวก่อน (ตัดสินใจ 2026-09-03) — ส่ง nil เพื่อไม่ให้
+	// owner/employee ของร้านเริ่มได้รับเองเงียบ ๆ หลังลูกค้าถูกผูกเข้าร้านแล้ว.
+	// ถ้าจะเปิดให้ร้านตรวจเอกสารเองเมื่อไหร่ เปลี่ยนกลับเป็น customer.StoreID
+	reviewers, err := u.customerRepo.FindReviewerIDs(nil)
 	if err != nil {
 		return
 	}

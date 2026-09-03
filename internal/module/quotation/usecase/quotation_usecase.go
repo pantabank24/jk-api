@@ -431,6 +431,7 @@ func (u *quotationUsecase) UpdateQuotationStatus(id uint, req *UpdateStatusReque
 	}
 
 	quotation.Status = req.Status
+	quotation.TouchStatus()
 	if req.Note != "" {
 		quotation.Note = req.Note
 	}

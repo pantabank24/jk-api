@@ -85,5 +85,17 @@ type Quotation struct {
 	Images     []QuotationImage `json:"images,omitempty" gorm:"foreignKey:QuotationID"`
 	CreatedAt  time.Time        `json:"created_at"`
 	UpdatedAt  time.Time        `json:"updated_at"`
-	DeletedAt  gorm.DeletedAt   `json:"-" gorm:"index"`
+	// StatusChangedAt คือเวลาที่ Status ถูกเปลี่ยนครั้งล่าสุด — คนละอย่างกับ UpdatedAt
+	// ซึ่งขยับทุกครั้งที่มีการเขียนอะไรก็ได้ลงแถวนี้ (แก้โน้ต, บันทึกส่งของเพิ่ม, ฯลฯ)
+	// แม้บิลจะปิดไปแล้ว. ลิสต์บิลแท็บ รอตรวจบิล/สำเร็จ/ยกเลิก/เคลียร์แล้ว เรียงด้วยค่านี้
+	// เพราะสิ่งที่คนอ่านลิสต์สนใจคือ "ล่าสุดที่ถูกปรับสถานะ" ไม่ใช่ตอนที่บิลถูกเปิด
+	StatusChangedAt *time.Time     `json:"status_changed_at" gorm:"index"`
+	DeletedAt       gorm.DeletedAt `json:"-" gorm:"index"`
+}
+
+// TouchStatus stamps the moment the status changed. Call it wherever Status is
+// assigned, right next to the assignment, so the two never drift apart.
+func (q *Quotation) TouchStatus() {
+	now := time.Now()
+	q.StatusChangedAt = &now
 }

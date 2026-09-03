@@ -31,11 +31,73 @@ func NewCustomerController(customerUsecase usecase.CustomerUsecase) *CustomerCon
 	return &CustomerController{customerUsecase: customerUsecase}
 }
 
+// parseBodyStoreID reads the optional store_id a master may send when creating or
+// moving a customer. It is read separately from the usecase request, whose StoreID
+// is json:"-" so a store-bound caller cannot smuggle another store in.
+func parseBodyStoreID(c *fiber.Ctx) *uint {
+	var body struct {
+		StoreID *uint `json:"store_id"`
+	}
+	if err := c.BodyParser(&body); err != nil {
+		return nil
+	}
+	return body.StoreID
+}
+
+// callerStoreScope returns the store a caller is confined to, or nil for master
+// (who works across every store). Customers are a STORE-level record: every
+// branch of a store shares one customer list, but another store must not see it.
+// Branch is never part of this — only role `employee` even has a branch.
+//
+// The error case matters: a non-master whose account carries no store must NOT
+// fall through to the master path, or an unassigned owner would silently see
+// every store's customers.
+func callerStoreScope(c *fiber.Ctx) (*uint, error) {
+	if middleware.GetRoleName(c) == "master" {
+		return nil, nil
+	}
+	storeID := middleware.GetStoreID(c)
+	if storeID == nil {
+		return nil, response.Forbidden(c, "บัญชีนี้ยังไม่ได้ผูกกับร้าน จึงดูข้อมูลลูกค้าไม่ได้")
+	}
+	return storeID, nil
+}
+
+// guardCustomerStore refuses a customer belonging to another store. The list is
+// filtered already; this closes the door of reaching one straight by id.
+func (ctrl *CustomerController) guardCustomerStore(c *fiber.Ctx, cust *entity.User) error {
+	scope, errResp := callerStoreScope(c)
+	if errResp != nil {
+		return errResp
+	}
+	if scope == nil {
+		return nil
+	}
+	if cust.StoreID == nil || *cust.StoreID != *scope {
+		// 404 rather than 403 — a customer of another store should not be
+		// confirmed to exist at all.
+		return response.NotFound(c, "Customer not found")
+	}
+	return nil
+}
+
 func (ctrl *CustomerController) CreateCustomer(c *fiber.Ctx) error {
 	var req usecase.CreateCustomerRequest
 	if err := c.BodyParser(&req); err != nil {
 		return response.BadRequest(c, "Invalid request body")
 	}
+	// ร้านของลูกค้ามาจากผู้เรียก ไม่ใช่จาก body ที่ client ส่งมาดื้อ ๆ: staff ผูกกับ
+	// ร้านของตัวเองเสมอ, master เลือกร้านได้ (ไม่ส่งมาและมีร้านเดียว usecase เติมให้)
+	scope, errResp := callerStoreScope(c)
+	if errResp != nil {
+		return errResp
+	}
+	if scope != nil {
+		req.StoreID = scope
+	} else {
+		req.StoreID = parseBodyStoreID(c)
+	}
+
 	customer, err := ctrl.customerUsecase.CreateCustomer(&req)
 	if err != nil {
 		return response.BadRequest(c, err.Error())
@@ -48,36 +110,24 @@ func (ctrl *CustomerController) GetAllCustomers(c *fiber.Ctx) error {
 	limit, _ := strconv.Atoi(c.Query("limit", "10"))
 	search := c.Query("search", "")
 
-	var storeID, branchID *uint
-	roleName := middleware.GetRoleName(c)
-	switch roleName {
-	case "master":
+	// ลูกค้าเป็นข้อมูลระดับ "ร้าน": ทุกสาขาในร้านเดียวกันเห็นชุดเดียวกัน แต่ร้านอื่น
+	// ต้องไม่เห็น. ไม่กรองด้วย branch_id เด็ดขาด — มีแค่ role employee ที่มีสาขา
+	// (requiresBranch ใน user usecase) ลูกค้าไม่มี การกรองสาขาจึงได้ 0 แถวเสมอ.
+	storeID, errResp := callerStoreScope(c)
+	if errResp != nil {
+		return errResp
+	}
+	if storeID == nil {
+		// master: ดูได้ทุกร้าน หรือเจาะร้านเดียวด้วย ?store_id=
 		if v := c.Query("store_id"); v != "" {
 			if id, err := strconv.ParseUint(v, 10, 32); err == nil {
 				uid := uint(id)
 				storeID = &uid
 			}
 		}
-		if v := c.Query("branch_id"); v != "" {
-			if id, err := strconv.ParseUint(v, 10, 32); err == nil {
-				uid := uint(id)
-				branchID = &uid
-			}
-		}
-	case "owner":
-		storeID = middleware.GetStoreID(c)
-		if v := c.Query("branch_id"); v != "" {
-			if id, err := strconv.ParseUint(v, 10, 32); err == nil {
-				uid := uint(id)
-				branchID = &uid
-			}
-		}
-	default: // employee
-		storeID = middleware.GetStoreID(c)
-		branchID = middleware.GetBranchID(c)
 	}
 
-	customers, total, err := ctrl.customerUsecase.GetAllCustomers(page, limit, storeID, branchID, search)
+	customers, total, err := ctrl.customerUsecase.GetAllCustomers(page, limit, storeID, search)
 	if err != nil {
 		return response.InternalServerError(c, err.Error())
 	}
@@ -85,27 +135,28 @@ func (ctrl *CustomerController) GetAllCustomers(c *fiber.Ctx) error {
 }
 
 func (ctrl *CustomerController) GetCustomerByID(c *fiber.Ctx) error {
-	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
-	if err != nil {
-		return response.BadRequest(c, "Invalid customer ID")
-	}
-	customer, err := ctrl.customerUsecase.GetCustomerByID(uint(id))
-	if err != nil {
-		return response.NotFound(c, "Customer not found")
+	customer, errResp := ctrl.loadCustomerParam(c)
+	if errResp != nil {
+		return errResp
 	}
 	return response.Success(c, "Customer retrieved", customer)
 }
 
 func (ctrl *CustomerController) UpdateCustomer(c *fiber.Ctx) error {
-	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
-	if err != nil {
-		return response.BadRequest(c, "Invalid customer ID")
+	existing, errResp := ctrl.loadCustomerParam(c)
+	if errResp != nil {
+		return errResp
 	}
 	var req usecase.UpdateCustomerRequest
 	if err := c.BodyParser(&req); err != nil {
 		return response.BadRequest(c, "Invalid request body")
 	}
-	customer, err := ctrl.customerUsecase.UpdateCustomer(uint(id), &req)
+	// ย้ายลูกค้าข้ามร้านได้เฉพาะ master — staff แก้ลูกค้าของร้านตัวเองได้ แต่ย้ายออกไป
+	// ร้านอื่น (ซึ่งเท่ากับทำให้ตัวเองมองไม่เห็นอีก) ไม่ได้
+	if scope, _ := callerStoreScope(c); scope == nil {
+		req.StoreID = parseBodyStoreID(c)
+	}
+	customer, err := ctrl.customerUsecase.UpdateCustomer(existing.ID, &req)
 	if err != nil {
 		return response.BadRequest(c, err.Error())
 	}
@@ -113,11 +164,11 @@ func (ctrl *CustomerController) UpdateCustomer(c *fiber.Ctx) error {
 }
 
 func (ctrl *CustomerController) DeleteCustomer(c *fiber.Ctx) error {
-	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
-	if err != nil {
-		return response.BadRequest(c, "Invalid customer ID")
+	cust, errResp := ctrl.loadCustomerParam(c)
+	if errResp != nil {
+		return errResp
 	}
-	if err := ctrl.customerUsecase.DeleteCustomer(uint(id)); err != nil {
+	if err := ctrl.customerUsecase.DeleteCustomer(cust.ID); err != nil {
 		return response.NotFound(c, err.Error())
 	}
 	return response.Success(c, "Customer deleted", nil)
@@ -125,18 +176,16 @@ func (ctrl *CustomerController) DeleteCustomer(c *fiber.Ctx) error {
 
 // UploadAvatar sets the customer's profile picture (multipart field "avatar").
 func (ctrl *CustomerController) UploadAvatar(c *fiber.Ctx) error {
-	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
-	if err != nil {
-		return response.BadRequest(c, "Invalid customer ID")
+	cust, errResp := ctrl.loadCustomerParam(c)
+	if errResp != nil {
+		return errResp
 	}
-	if _, err := ctrl.customerUsecase.GetCustomerByID(uint(id)); err != nil {
-		return response.NotFound(c, "Customer not found")
-	}
+	id := cust.ID
 	path, err := upload.SaveFile(c, "avatar", fmt.Sprintf("customers/%d", id))
 	if err != nil {
 		return response.BadRequest(c, err.Error())
 	}
-	customer, err := ctrl.customerUsecase.UpdateAvatar(uint(id), path)
+	customer, err := ctrl.customerUsecase.UpdateAvatar(id, path)
 	if err != nil {
 		return response.BadRequest(c, err.Error())
 	}
@@ -146,14 +195,29 @@ func (ctrl *CustomerController) UploadAvatar(c *fiber.Ctx) error {
 // customerIDParam reads :id off a staff-facing customer route and checks the
 // customer exists.
 func (ctrl *CustomerController) customerIDParam(c *fiber.Ctx) (uint, error) {
+	cust, errResp := ctrl.loadCustomerParam(c)
+	if errResp != nil {
+		return 0, errResp
+	}
+	return cust.ID, nil
+}
+
+// loadCustomerParam reads :id off a staff-facing route, loads the customer and
+// refuses one belonging to another store. Every staff entry point to a single
+// customer goes through here, so the store boundary is enforced in one place.
+func (ctrl *CustomerController) loadCustomerParam(c *fiber.Ctx) (*entity.User, error) {
 	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
 	if err != nil {
-		return 0, response.BadRequest(c, "Invalid customer ID")
+		return nil, response.BadRequest(c, "Invalid customer ID")
 	}
-	if _, err := ctrl.customerUsecase.GetCustomerByID(uint(id)); err != nil {
-		return 0, response.NotFound(c, "Customer not found")
+	cust, err := ctrl.customerUsecase.GetCustomerByID(uint(id))
+	if err != nil {
+		return nil, response.NotFound(c, "Customer not found")
 	}
-	return uint(id), nil
+	if errResp := ctrl.guardCustomerStore(c, cust); errResp != nil {
+		return nil, errResp
+	}
+	return cust, nil
 }
 
 // UploadDocuments accepts multipart field "files" (multiple) plus an optional
@@ -275,11 +339,11 @@ func (ctrl *CustomerController) uploadDocumentsFor(c *fiber.Ctx, userID uint) er
 }
 
 func (ctrl *CustomerController) GetDocuments(c *fiber.Ctx) error {
-	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
-	if err != nil {
-		return response.BadRequest(c, "Invalid customer ID")
+	id, errResp := ctrl.customerIDParam(c)
+	if errResp != nil {
+		return errResp
 	}
-	return ctrl.getDocumentsFor(c, uint(id))
+	return ctrl.getDocumentsFor(c, id)
 }
 
 // GetMyDocuments lists the logged-in customer's own documents.
@@ -296,11 +360,11 @@ func (ctrl *CustomerController) getDocumentsFor(c *fiber.Ctx, userID uint) error
 }
 
 func (ctrl *CustomerController) DeleteDocument(c *fiber.Ctx) error {
-	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
-	if err != nil {
-		return response.BadRequest(c, "Invalid customer ID")
+	id, errResp := ctrl.customerIDParam(c)
+	if errResp != nil {
+		return errResp
 	}
-	return ctrl.deleteDocumentFor(c, uint(id), true)
+	return ctrl.deleteDocumentFor(c, id, true)
 }
 
 // DeleteMyDocument lets a customer remove a document off their own record. The
@@ -368,16 +432,17 @@ func (ctrl *CustomerController) RejectDocument(c *fiber.Ctx) error {
 // reviewTarget resolves :id/:docId and checks the document really belongs to that
 // customer, so a review cannot be aimed at someone else's file by guessing an id.
 func (ctrl *CustomerController) reviewTarget(c *fiber.Ctx) (*entity.CustomerDocument, error) {
-	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
-	if err != nil {
-		return nil, response.BadRequest(c, "Invalid customer ID")
+	cust, errResp := ctrl.loadCustomerParam(c)
+	if errResp != nil {
+		return nil, errResp
 	}
+	id := cust.ID
 	docID, err := strconv.ParseUint(c.Params("docId"), 10, 32)
 	if err != nil {
 		return nil, response.BadRequest(c, "Invalid document ID")
 	}
 	doc, err := ctrl.customerUsecase.GetDocumentByID(uint(docID))
-	if err != nil || doc.UserID != uint(id) {
+	if err != nil || doc.UserID != id {
 		return nil, response.NotFound(c, "Document not found")
 	}
 	return doc, nil

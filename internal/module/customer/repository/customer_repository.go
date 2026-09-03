@@ -2,6 +2,7 @@ package repository
 
 import (
 	"errors"
+	"sync"
 
 	"jk-api/internal/entity"
 	"jk-api/internal/verification"
@@ -14,7 +15,10 @@ import (
 type CustomerRepository interface {
 	GetCustomerRoleID() (uint, error)
 	Create(user *entity.User) error
-	FindAll(page, limit int, storeID, branchID *uint, search string) ([]entity.User, int64, error)
+	FindAll(page, limit int, storeID *uint, search string) ([]entity.User, int64, error)
+	// FindSoleStoreID returns the shop's only store, or nil when there is more than
+	// one. Lets a single-store shop create customers without having to name a store.
+	FindSoleStoreID() (*uint, error)
 	FindByID(id uint) (*entity.User, error)
 	Update(user *entity.User) error
 	Delete(id uint) error
@@ -40,8 +44,36 @@ type CustomerRepository interface {
 	FindReviewerIDs(storeID *uint) ([]uint, error)
 }
 
+// thaiCollation คือ ICU collation ที่เรียงภาษาไทยตามลำดับพจนานุกรม
+const thaiCollation = "th-TH-x-icu"
+
 type customerRepository struct {
 	db *gorm.DB
+
+	// ORDER BY สำหรับลิสต์ลูกค้า — ตรวจครั้งเดียวว่า DB มี ICU collation ไหม
+	nameOrderOnce sync.Once
+	nameOrderSQL  string
+}
+
+// nameOrder returns the ORDER BY that lists customers ตามพยัญชนะชื่อ.
+//
+// การเรียงตามค่า byte ล้วน ๆ ได้ลำดับพยัญชนะถูก (ก–ฮ คือ U+0E01–U+0E2E เรียงตาม
+// ตัวอักษรอยู่แล้ว) แต่ผิดกับชื่อที่ขึ้นต้นด้วยสระหน้า: เ แ โ ใ ไ อยู่ที่ U+0E40–U+0E44
+// ซึ่งมาหลัง ฮ ทั้งหมด "เกียรติ" จึงไปตกท้ายลิสต์แทนที่จะอยู่ใต้ ก. ICU collation
+// จัดการเรื่องนี้ให้.
+//
+// postgres:16 ที่ระบบนี้ใช้มี ICU มาให้อยู่แล้ว แต่ถ้าเจอ DB ที่ build มาโดยไม่มี
+// ICU ให้ตกกลับไปใช้ collation เริ่มต้น — ลิสต์เรียงไม่สวยดีกว่าลิสต์พังทั้งหน้า
+func (r *customerRepository) nameOrder() string {
+	r.nameOrderOnce.Do(func() {
+		r.nameOrderSQL = "users.name ASC, users.id ASC"
+		var n int64
+		if err := r.db.Raw("SELECT count(*) FROM pg_collation WHERE collname = ?",
+			thaiCollation).Scan(&n).Error; err == nil && n > 0 {
+			r.nameOrderSQL = `users.name COLLATE "` + thaiCollation + `" ASC, users.id ASC`
+		}
+	})
+	return r.nameOrderSQL
 }
 
 func NewCustomerRepository(db *gorm.DB) CustomerRepository {
@@ -60,7 +92,7 @@ func (r *customerRepository) Create(user *entity.User) error {
 	return r.db.Create(user).Error
 }
 
-func (r *customerRepository) FindAll(page, limit int, storeID, branchID *uint, search string) ([]entity.User, int64, error) {
+func (r *customerRepository) FindAll(page, limit int, storeID *uint, search string) ([]entity.User, int64, error) {
 	var users []entity.User
 	var total int64
 
@@ -69,12 +101,11 @@ func (r *customerRepository) FindAll(page, limit int, storeID, branchID *uint, s
 		return nil, 0, err
 	}
 
+	// กรองเฉพาะร้าน ไม่กรองสาขา — ลูกค้าเป็นข้อมูลระดับร้าน ทุกสาขาในร้านเดียวกัน
+	// เห็นชุดเดียวกัน (ดูคอมเมนต์ที่ controller)
 	query := r.db.Model(&entity.User{}).Where("role_id = ?", roleID)
 	if storeID != nil {
 		query = query.Where("store_id = ?", *storeID)
-	}
-	if branchID != nil {
-		query = query.Where("branch_id = ?", *branchID)
 	}
 	if search != "" {
 		query = query.Where("name ILIKE ? OR email ILIKE ?", "%"+search+"%", "%"+search+"%")
@@ -83,12 +114,24 @@ func (r *customerRepository) FindAll(page, limit int, storeID, branchID *uint, s
 	query.Count(&total)
 	offset := (page - 1) * limit
 	err = query.Preload("Role").Preload("Store").Preload("Branch").
-		Offset(offset).Limit(limit).Order("id DESC").Find(&users).Error
+		Offset(offset).Limit(limit).Order(r.nameOrder()).Find(&users).Error
 	if err == nil {
 		// One extra query for the whole page — the list draws a verify badge per row.
 		verification.Apply(r.db, users)
 	}
 	return users, total, err
+}
+
+func (r *customerRepository) FindSoleStoreID() (*uint, error) {
+	var ids []uint
+	// Two is enough to know it is not "sole" — no need to count the whole table.
+	if err := r.db.Model(&entity.Store{}).Order("id").Limit(2).Pluck("id", &ids).Error; err != nil {
+		return nil, err
+	}
+	if len(ids) != 1 {
+		return nil, nil
+	}
+	return &ids[0], nil
 }
 
 func (r *customerRepository) FindByID(id uint) (*entity.User, error) {

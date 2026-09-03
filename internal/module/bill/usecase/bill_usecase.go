@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"jk-api/internal/entity"
 	"jk-api/internal/module/bill/repository"
@@ -213,21 +214,23 @@ func (u *billUsecase) upsertPendingBill(req *CreateBillRequest, metal string, it
 	}
 
 	createdBy := req.CreatedByUserID
+	now := time.Now()
 	bill := &entity.Quotation{
-		StoreID:     req.StoreID,
-		BranchID:    req.BranchID,
-		CreatedBy:   &createdBy,
-		Code:        code,
-		Status:      repository.StatusPendingIssue, // รอออกบิล
-		Metal:       metal,
-		Note:        req.Note,
-		TotalAmount: totalAmount,
-		GoldRound:   req.GoldRound,
-		GoldPriceID: req.GoldPriceID,
-		IsBill:      true,
-		AutoSell:    req.AutoSell,
-		SellOrderID: req.SellOrderID,
-		Items:       items,
+		StoreID:         req.StoreID,
+		BranchID:        req.BranchID,
+		CreatedBy:       &createdBy,
+		Code:            code,
+		Status:          repository.StatusPendingIssue, // รอออกบิล
+		StatusChangedAt: &now,
+		Metal:           metal,
+		Note:            req.Note,
+		TotalAmount:     totalAmount,
+		GoldRound:       req.GoldRound,
+		GoldPriceID:     req.GoldPriceID,
+		IsBill:          true,
+		AutoSell:        req.AutoSell,
+		SellOrderID:     req.SellOrderID,
+		Items:           items,
 	}
 
 	if err := u.billRepo.Create(bill); err != nil {
@@ -311,6 +314,7 @@ func (u *billUsecase) IssueBill(id uint, req *UpdateBillStatusRequest) (*entity.
 		return nil, errors.New("ออกบิลได้เฉพาะบิลที่สถานะ 'รอออกบิล' เท่านั้น")
 	}
 	bill.Status = repository.StatusPendingReview
+	bill.TouchStatus()
 	if req.Note != "" {
 		bill.Note = req.Note
 	}
@@ -331,6 +335,7 @@ func (u *billUsecase) ApproveBill(id uint, req *UpdateBillStatusRequest) (*entit
 		return nil, errors.New("อนุมัติได้เฉพาะบิลที่สถานะ 'รอตรวจบิล' เท่านั้น")
 	}
 	bill.Status = repository.StatusCompleted
+	bill.TouchStatus()
 	if req.Note != "" {
 		bill.Note = req.Note
 	}
@@ -354,6 +359,7 @@ func (u *billUsecase) CancelBill(id uint, req *UpdateBillStatusRequest) (*entity
 		return nil, errors.New("บิลถูกยกเลิกไปแล้ว")
 	}
 	bill.Status = repository.StatusCancelled
+	bill.TouchStatus()
 	if req.RejectReason != "" {
 		bill.RejectReason = req.RejectReason
 	}

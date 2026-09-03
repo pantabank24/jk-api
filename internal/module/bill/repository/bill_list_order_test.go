@@ -32,6 +32,7 @@ func TestListOrderSQL(t *testing.T) {
 	pendingIssue := StatusPendingIssue
 	pendingReview := StatusPendingReview
 	completed := StatusCompleted
+	cleared := StatusCleared
 
 	cases := []struct {
 		name   string
@@ -45,16 +46,25 @@ func TestListOrderSQL(t *testing.T) {
 			want:   []string{"MAX(qi.created_at)", "qi.deleted_at IS NULL", "quotations.created_at) DESC", "quotations.id DESC"},
 		},
 		{
-			name:   "รอตรวจบิล sorts by when staff issued it",
+			name:   "รอตรวจบิล sorts by when it was put into that status",
 			filter: BillFilter{Status: &pendingReview},
-			want:   []string{"iq.id = quotations.issued_quotation_id", "quotations.updated_at) DESC", "quotations.id DESC"},
+			want:   []string{"quotations.status_changed_at DESC NULLS LAST", "quotations.id DESC"},
 			reject: []string{"MAX(qi.created_at)"},
 		},
 		{
-			name:   "other tabs keep the original id order",
+			// id is when the bill was first OPENED. A bill opened in July but cleared
+			// today must not sink to the bottom of เคลียร์แล้ว, and updated_at is no
+			// good either: it moves when a closed bill's note is edited.
+			name:   "สำเร็จ sorts by when it was completed, not by id or updated_at",
 			filter: BillFilter{Status: &completed},
-			want:   []string{"ORDER BY quotations.id DESC"},
-			reject: []string{"MAX(qi.created_at)", "issued_quotation_id"},
+			want:   []string{"quotations.status_changed_at DESC NULLS LAST"},
+			reject: []string{"MAX(qi.created_at)", "ORDER BY quotations.id DESC", "quotations.updated_at"},
+		},
+		{
+			name:   "เคลียร์แล้ว sorts by when it was cleared",
+			filter: BillFilter{Status: &cleared},
+			want:   []string{"quotations.status_changed_at DESC NULLS LAST"},
+			reject: []string{"ORDER BY quotations.id DESC", "quotations.updated_at"},
 		},
 		{
 			name:   "no status filter keeps the original id order",
