@@ -2,6 +2,7 @@ package controller
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -209,6 +210,17 @@ func (ctrl *QuotationController) CreateQuotation(c *fiber.Ctx) error {
 	if err != nil {
 		return response.BadRequest(c, err.Error())
 	}
+	// Close the ใบเปิดงาน this was issued from: its counter photos move onto the
+	// quotation and it leaves the open list. Deliberately after the save and
+	// never fatal — the document exists either way, and a photo that failed to
+	// copy is recoverable from the intake row, while a rolled-back quotation
+	// after the customer has signed is not.
+	if req.IntakeID != nil {
+		if err := ctrl.consumeIntake(c, *req.IntakeID, quotation); err != nil {
+			log.Printf("quotation %d: consume intake %d: %v", quotation.ID, *req.IntakeID, err)
+		}
+	}
+
 	middleware.SetActivityDescription(c, fmt.Sprintf(
 		"สร้างใบเสนอราคา %s ให้ %s (%d รายการ รวม %.2f บาท)",
 		visibleQuotationCode(quotation), quotation.SignerName, len(quotation.Items), quotation.TotalAmount,
@@ -222,6 +234,23 @@ func (ctrl *QuotationController) CreateQuotation(c *fiber.Ctx) error {
 		"items":        quotationLines(quotation),
 	})
 	return response.Created(c, "Quotation created", quotation)
+}
+
+// consumeIntake hands the intake off to the service, but only once the caller is
+// shown to own it: an intake belongs to the counter that took the goods in, so a
+// quotation from another store must never be able to claim its photos.
+func (ctrl *QuotationController) consumeIntake(c *fiber.Ctx, intakeID uint, q *entity.Quotation) error {
+	var intake entity.QuotationIntake
+	if err := ctrl.db.First(&intake, intakeID).Error; err != nil {
+		return err
+	}
+	if !middleware.IsMaster(c) {
+		storeID := middleware.GetStoreID(c)
+		if storeID == nil || intake.StoreID == nil || *intake.StoreID != *storeID {
+			return fmt.Errorf("intake %d is outside the caller's store", intakeID)
+		}
+	}
+	return service.ConsumeIntake(ctrl.db, intakeID, q.ID)
 }
 
 func (ctrl *QuotationController) GetAllQuotations(c *fiber.Ctx) error {

@@ -36,6 +36,7 @@ func SetupV1Routes(api fiber.Router, db *gorm.DB, cfg *config.Config, cronSvc *s
 	SetupBranchRoutes(v1, db, cfg)
 	SetupMemberRoutes(v1, db, cfg)
 	SetupQuotationRoutes(v1, db, cfg)
+	SetupQuotationIntakeRoutes(v1, db, cfg)
 	SetupBillRoutes(v1, db, cfg)
 	SetupCustomerRoutes(v1, db, cfg)
 	SetupRoleRoutes(v1, db, cfg)
@@ -56,6 +57,7 @@ func SetupV1Routes(api fiber.Router, db *gorm.DB, cfg *config.Config, cronSvc *s
 	SetupDocumentTypeRoutes(v1, db, cfg)
 	SetupSellOrderRoutes(v1, db, cfg, sellEngine)
 	SetupReceiptRoutes(v1, db, cfg)
+	SetupReportRoutes(v1, db, cfg)
 }
 
 // NewCronService creates and starts the gold price cron service.

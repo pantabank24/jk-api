@@ -70,10 +70,11 @@ func metalNoun(metal string) string {
 // and announces it when it reaches a whole lot that hasn't been announced yet.
 //
 // The latch is a lot COUNT, not a boolean: a pile that grows from 65 to 130 บาท
-// gets a second message ("จำนวน 2 กิโลกรัม") while ten sells that keep it
-// between 65 and 70 get none. When the pile shrinks — staff removed a line, or
-// the bills were issued — the count falls with it, which re-arms the alert for
-// the next time it climbs.
+// gets a second message while ten sells that keep it between 65 and 70 get none.
+// Every message reads "จำนวน 1 กิโลกรัม" — the count decides HOW MANY notices go
+// out, never the number printed inside one. When the pile shrinks — staff
+// removed a line, or the bills were issued — the count falls with it, which
+// re-arms the alert for the next time it climbs.
 //
 // Safe to call in a goroutine; every failure path is silent by design (an alert
 // must never break the request that caused it).
@@ -109,8 +110,14 @@ func SyncPendingSellAlert(db *gorm.DB, metal string) {
 	if target == "" {
 		return
 	}
-	_ = linenotify.SendText(target, pendingSellMessage(
-		PendingSellName(db), bangkokNow(), metal, pendingSellPurity(db, metal), lots))
+	// One notice per kilo that has just completed, never a running total: the
+	// pile jumping straight from 0 to 2 kilos owes the counterparty two แจ้งขาย
+	// of 1 กิโลกรัม, not a single line reading "2 กิโลกรัม".
+	name := PendingSellName(db)
+	purity := pendingSellPurity(db, metal)
+	for i := alerted; i < lots; i++ {
+		_ = linenotify.SendText(target, pendingSellMessage(name, bangkokNow(), metal, purity))
+	}
 }
 
 // PendingSellWeight totals what the shop has taken in and not billed out: every
@@ -170,12 +177,17 @@ func swapPendingSellLots(db *gorm.DB, metal string, lots int) (previous int, err
 //
 //	วีรชัย ชัยนุมาศ วันที่ 31/07/2568 เวลา 14:35 น. แจ้งขายทองคำ 99.99% จำนวน 1 กิโลกรัม
 //
+// The quantity is always 1 กิโลกรัม and is not a parameter: the shop sells this
+// on one kilo at a time, so each completed kilo gets its own notice rather than
+// one notice carrying a running total. Two kilos completing together send two of
+// these, which is what the counterparty is being told either way.
+//
 // The name is the shop's own (see KeyPendingSellName), not the customer's: the
 // pile is everyone's metal together, and it is the shop that is selling it on.
-func pendingSellMessage(sender string, at time.Time, metal, purity string, lots int) string {
-	return fmt.Sprintf("%s วันที่ %02d/%02d/%d เวลา %s น. แจ้งขาย%s %s%% จำนวน %s กิโลกรัม",
+func pendingSellMessage(sender string, at time.Time, metal, purity string) string {
+	return fmt.Sprintf("%s วันที่ %02d/%02d/%d เวลา %s น. แจ้งขาย%s %s%% จำนวน 1 กิโลกรัม",
 		sender, at.Day(), int(at.Month()), at.Year()+543,
-		at.Format("15:04"), metalNoun(metal), purity, formatInt(int64(lots)))
+		at.Format("15:04"), metalNoun(metal), purity)
 }
 
 // PendingSellName is who every pending-sell announcement is signed by.
@@ -288,7 +300,7 @@ func SendPendingSellTestAlert(db *gorm.DB, metal string) error {
 	if target == "" {
 		return fmt.Errorf("ยังไม่ได้เชื่อมต่อ LINE")
 	}
-	msg := "[ทดสอบ] " + pendingSellMessage(PendingSellName(db), bangkokNow(), metal, pendingSellPurity(db, metal), 1)
+	msg := "[ทดสอบ] " + pendingSellMessage(PendingSellName(db), bangkokNow(), metal, pendingSellPurity(db, metal))
 	return linenotify.SendText(target, msg)
 }
 

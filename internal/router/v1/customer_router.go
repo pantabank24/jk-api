@@ -19,10 +19,10 @@ func SetupCustomerRoutes(v1 fiber.Router, db *gorm.DB, cfg *config.Config) {
 
 	customers := v1.Group("/customers", middleware.AuthMiddleware(cfg))
 	{
-		customers.Get("/",     middleware.RequirePermission(db, "customers.read"),   ctrl.GetAllCustomers)
-		customers.Get("/:id",  middleware.RequirePermission(db, "customers.read"),   ctrl.GetCustomerByID)
-		customers.Post("/",    middleware.RequirePermission(db, "customers.create"), ctrl.CreateCustomer)
-		customers.Put("/:id",  middleware.RequirePermission(db, "customers.update"), ctrl.UpdateCustomer)
+		customers.Get("/", middleware.RequirePermission(db, "customers.read"), ctrl.GetAllCustomers)
+		customers.Get("/:id", middleware.RequirePermission(db, "customers.read"), ctrl.GetCustomerByID)
+		customers.Post("/", middleware.RequirePermission(db, "customers.create"), ctrl.CreateCustomer)
+		customers.Put("/:id", middleware.RequirePermission(db, "customers.update"), ctrl.UpdateCustomer)
 		customers.Delete("/:id", middleware.RequirePermission(db, "customers.delete"), ctrl.DeleteCustomer)
 
 		// Customer profile picture
@@ -32,18 +32,18 @@ func SetupCustomerRoutes(v1 fiber.Router, db *gorm.DB, cfg *config.Config) {
 		// Registered before the /:id twins so "me" is not swallowed by the param
 		// route, and permission-free because customers hold no customers.* rights —
 		// the handlers scope every row to the token's own user id.
-		customers.Get("/me/documents",           ctrl.GetMyDocuments)
-		customers.Post("/me/documents",          ctrl.UploadMyDocuments)
+		customers.Get("/me/documents", ctrl.GetMyDocuments)
+		customers.Post("/me/documents", ctrl.UploadMyDocuments)
 		customers.Delete("/me/documents/:docId", ctrl.DeleteMyDocument)
 
 		// Customer documents (images / pdf / docx / xlsx)
-		customers.Get("/:id/documents",           middleware.RequirePermission(db, "customers.read"),   ctrl.GetDocuments)
-		customers.Post("/:id/documents",          middleware.RequirePermission(db, "customers.update"), ctrl.UploadDocuments)
+		customers.Get("/:id/documents", middleware.RequirePermission(db, "customers.read"), ctrl.GetDocuments)
+		customers.Post("/:id/documents", middleware.RequirePermission(db, "customers.update"), ctrl.UploadDocuments)
 		customers.Delete("/:id/documents/:docId", middleware.RequirePermission(db, "customers.update"), ctrl.DeleteDocument)
 
 		// Reviewing identity documents — its own permission, held by employees too
 		// (see migration 000094), since they are the ones the notification reaches.
 		customers.Put("/:id/documents/:docId/approve", middleware.RequirePermission(db, "customers.approve_documents"), ctrl.ApproveDocument)
-		customers.Put("/:id/documents/:docId/reject",  middleware.RequirePermission(db, "customers.approve_documents"), ctrl.RejectDocument)
+		customers.Put("/:id/documents/:docId/reject", middleware.RequirePermission(db, "customers.approve_documents"), ctrl.RejectDocument)
 	}
 }

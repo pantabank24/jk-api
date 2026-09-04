@@ -18,10 +18,10 @@ func SetupLineRoutes(v1 fiber.Router, db *gorm.DB, cfg *config.Config) {
 	// Authenticated
 	line := v1.Group("/line", middleware.AuthMiddleware(cfg))
 	{
-		line.Get("/status",  middleware.RequirePermission(db, "config.read"),   ctrl.Status)
-		line.Get("/quota",   middleware.RequirePermission(db, "config.read"),   ctrl.Quota)
-		line.Put("/config",  middleware.RequirePermission(db, "config.update"), ctrl.SaveConfig)
-		line.Post("/test",   middleware.RequirePermission(db, "config.update"), ctrl.Test)
+		line.Get("/status", middleware.RequirePermission(db, "config.read"), ctrl.Status)
+		line.Get("/quota", middleware.RequirePermission(db, "config.read"), ctrl.Quota)
+		line.Put("/config", middleware.RequirePermission(db, "config.update"), ctrl.SaveConfig)
+		line.Post("/test", middleware.RequirePermission(db, "config.update"), ctrl.Test)
 		line.Post("/unlink", middleware.RequirePermission(db, "config.update"), ctrl.Unlink)
 	}
 }

@@ -102,8 +102,14 @@ type CreateQuotationRequest struct {
 	// Bills fully covered advance whole; partially covered bills are split so the
 	// unticked items stay "รอออกบิล" for a later round. Empty = cover everything
 	// (legacy whole-bill behaviour).
-	BillItemIDs []uint                       `json:"bill_item_ids"`
-	Items       []CreateQuotationItemRequest `json:"items"`
+	BillItemIDs []uint `json:"bill_item_ids"`
+	// IntakeID is the ใบเปิดงาน this quotation is being issued from — the counter
+	// step that photographed the goods before they were melted. The intake's
+	// photos are copied onto the quotation and the intake is closed AFTER the
+	// document is saved (see the controller); nothing about the quotation itself
+	// depends on it, so issuing without one behaves exactly as it always has.
+	IntakeID *uint                        `json:"intake_id"`
+	Items    []CreateQuotationItemRequest `json:"items"`
 	// Page1Items is the detailed per-item breakdown (raw JSON array) for the
 	// printed page 1. `Items` is stored consolidated (one line per metal); this
 	// keeps the itemised view so reprints never fall back to the merged lines.

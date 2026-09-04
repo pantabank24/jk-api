@@ -18,10 +18,10 @@ const (
 // SalesStatus describes whether sales are currently open and which price source
 // applies. Times are HH:MM in Asia/Bangkok.
 type SalesStatus struct {
-	Enabled            bool   `json:"enabled"`              // master switch (sales_enabled)
-	IsOpen             bool   `json:"is_open"`              // true when PriceMode != closed
-	PriceMode          string `json:"price_mode"`           // closed|association|realtime
-	OpenTime           string `json:"open_time"`            // effective rule's window
+	Enabled            bool   `json:"enabled"`    // master switch (sales_enabled)
+	IsOpen             bool   `json:"is_open"`    // true when PriceMode != closed
+	PriceMode          string `json:"price_mode"` // closed|association|realtime
+	OpenTime           string `json:"open_time"`  // effective rule's window
 	CloseTime          string `json:"close_time"`
 	RealtimeAfterHours bool   `json:"realtime_after_hours"` // effective rule
 	RealtimeUntil      string `json:"realtime_until"`       // realtime cutoff, '' = no limit
@@ -30,12 +30,19 @@ type SalesStatus struct {
 	Now                string `json:"now"`
 }
 
-func bangkokNow() time.Time {
+// BangkokLocation is the shop's clock. Every business day, opening window and
+// report bucket is measured against it, never against the server's zone — and it
+// falls back to a fixed +07:00 for images that ship without tzdata.
+func BangkokLocation() *time.Location {
 	loc, err := time.LoadLocation("Asia/Bangkok")
 	if err != nil {
-		loc = time.FixedZone("ICT", 7*3600)
+		return time.FixedZone("ICT", 7*3600)
 	}
-	return time.Now().In(loc)
+	return loc
+}
+
+func bangkokNow() time.Time {
+	return time.Now().In(BangkokLocation())
 }
 
 func configValue(db *gorm.DB, key, def string) string {

@@ -11,18 +11,20 @@ import (
 
 // TestPendingSellMessageFormat pins the wording: it is forwarded to a
 // counterparty as-is, so the shape of the line is the feature. Silver announces
-// เงิน, not ทองคำ.
+// เงิน, not ทองคำ — and the quantity is always 1 กิโลกรัม, because the shop sells
+// this on one kilo at a time (a bigger pile sends more notices, not a bigger
+// number inside one).
 func TestPendingSellMessageFormat(t *testing.T) {
 	at := time.Date(2025, 7, 31, 14, 35, 0, 0, time.FixedZone("ICT", 7*3600))
 
-	got := pendingSellMessage("วีรชัย ชัยนุมาศ", at, "gold", "99.99", 1)
+	got := pendingSellMessage("วีรชัย ชัยนุมาศ", at, "gold", "99.99")
 	want := "วีรชัย ชัยนุมาศ วันที่ 31/07/2568 เวลา 14:35 น. แจ้งขายทองคำ 99.99% จำนวน 1 กิโลกรัม"
 	if got != want {
 		t.Errorf("gold message =\n  %q\nwant\n  %q", got, want)
 	}
 
-	got = pendingSellMessage("วีรชัย ชัยนุมาศ", at, "silver", "99.9", 2)
-	want = "วีรชัย ชัยนุมาศ วันที่ 31/07/2568 เวลา 14:35 น. แจ้งขายเงิน 99.9% จำนวน 2 กิโลกรัม"
+	got = pendingSellMessage("วีรชัย ชัยนุมาศ", at, "silver", "99.9")
+	want = "วีรชัย ชัยนุมาศ วันที่ 31/07/2568 เวลา 14:35 น. แจ้งขายเงิน 99.9% จำนวน 1 กิโลกรัม"
 	if got != want {
 		t.Errorf("silver message =\n  %q\nwant\n  %q", got, want)
 	}

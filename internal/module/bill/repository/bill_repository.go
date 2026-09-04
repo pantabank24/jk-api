@@ -2,6 +2,7 @@ package repository
 
 import (
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"jk-api/internal/documentcode"
@@ -166,35 +167,71 @@ func (r *billRepository) scope(f BillFilter) *gorm.DB {
 	return query
 }
 
+// Sort keys for a bill list. Each one answers "when did the thing this tab is
+// about last happen to this bill", and each falls back down to a column that is
+// always set, so a bill missing the ideal stamp still lands somewhere sane
+// instead of sinking below every other row.
+const (
+	// What the customer last sent in. NOT status_changed_at: a bill sits in
+	// รอออกบิล while the customer keeps selling into it, so its status stamp is
+	// frozen at the moment it was opened while the pile keeps growing — the staff
+	// member reading that tab is waiting on the newest item, not the bill.
+	// Falls back to the bill's own date for a bill whose items were all removed.
+	orderByNewestItem = `COALESCE((SELECT MAX(qi.created_at) FROM quotation_items qi
+			WHERE qi.quotation_id = quotations.id AND qi.deleted_at IS NULL),
+			quotations.created_at)`
+
+	// When the bill was rolled into an issued quotation. Once a bill has been
+	// issued that date is the one every later tab is really about — it is what the
+	// customer signed and what the printed paper is dated — so รอตรวจบิล, สำเร็จ and
+	// เคลียร์แล้ว all sort by it and a bill keeps its place as it moves between them.
+	// Falls back to status_changed_at for a bill that reached one of those statuses
+	// without an issuance (older rows), then to its own date.
+	orderByIssuedAt = `COALESCE((SELECT iq.created_at FROM quotations iq
+			WHERE iq.id = quotations.issued_quotation_id AND iq.deleted_at IS NULL),
+			quotations.status_changed_at, quotations.created_at)`
+
+	// When the bill was put into its current status. ยกเลิก uses this because a
+	// cancelled bill has no issuance to date it by, and neither of the two obvious
+	// columns says it: `id` is the order bills were first opened (a bill opened in
+	// July but cancelled today would sit at the very bottom), and `updated_at` moves
+	// on any later write at all — editing a note would shuffle it back to the top.
+	// status_changed_at is stamped only where Status is assigned (entity.Quotation.TouchStatus).
+	orderByStatusChangedAt = `COALESCE(quotations.status_changed_at, quotations.created_at)`
+)
+
 // listOrder decides what "newest" means for the tab being shown. A bill's own id
-// is the order it was FIRST opened, which is the wrong answer for the two working
-// tabs: a รอออกบิล bill is reused (see upsertPendingBill) and keeps its id while
-// the customer keeps selling into it, and a รอตรวจบิล bill was opened long before
-// staff got round to issuing it. Both tabs therefore sort by the event the person
-// reading the list is waiting on, with id as the tie-break.
+// is the order it was FIRST opened, which is the wrong answer for every tab: a
+// รอออกบิล bill is reused (see upsertPendingBill) and keeps its id while the
+// customer keeps selling into it, and a bill opened in July but cleared today
+// would sit at the bottom of เคลียร์แล้ว. Each tab therefore sorts by the event the
+// person reading the list is waiting on, with id as the tie-break.
+//
+// ทั้งหมด mixes statuses, so it applies the same rule per row: every bill is dated
+// by the event that matters for the status it is actually in. That keeps one bill
+// in the same relative position whether it is read there or on its own tab.
 func (r *billRepository) listOrder(f BillFilter) string {
 	if f.Status == nil {
-		return "quotations.id DESC"
+		return fmt.Sprintf(`CASE quotations.status
+			WHEN %d THEN %s
+			WHEN %d THEN %s
+			WHEN %d THEN %s
+			WHEN %d THEN %s
+			ELSE %s END DESC, quotations.id DESC`,
+			StatusPendingIssue, orderByNewestItem,
+			StatusPendingReview, orderByIssuedAt,
+			StatusCompleted, orderByIssuedAt,
+			StatusCleared, orderByIssuedAt,
+			orderByStatusChangedAt)
 	}
 	switch *f.Status {
 	case StatusPendingIssue:
-		// What the customer last sent in. NOT status_changed_at: a bill sits in
-		// รอออกบิล while the customer keeps selling into it, so its status stamp is
-		// frozen at the moment it was opened while the pile keeps growing — the
-		// staff member reading this tab is waiting on the newest item, not the bill.
-		// Falls back to the bill's own date for a bill whose items were all removed.
-		return `COALESCE((SELECT MAX(qi.created_at) FROM quotation_items qi
-			WHERE qi.quotation_id = quotations.id AND qi.deleted_at IS NULL),
-			quotations.created_at) DESC, quotations.id DESC`
+		return orderByNewestItem + " DESC, quotations.id DESC"
+	case StatusPendingReview, StatusCompleted, StatusCleared:
+		return orderByIssuedAt + " DESC, quotations.id DESC"
 	}
-	// Every other tab (รอตรวจบิล, สำเร็จ, ยกเลิก, เคลียร์แล้ว) is a resting place a bill
-	// was PUT INTO, so the thing to sort by is when that happened. Neither of the
-	// two obvious columns says it: `id` is the order bills were first opened (a bill
-	// opened in July but cleared today would sit at the very bottom of เคลียร์แล้ว),
-	// and `updated_at` moves on any later write at all — editing a note or logging a
-	// delivery would shuffle a closed bill back to the top. status_changed_at is
-	// stamped only where Status is assigned (see entity.Quotation.TouchStatus).
-	return "quotations.status_changed_at DESC NULLS LAST, quotations.id DESC"
+	// ยกเลิก, and any status added later without a rule of its own.
+	return orderByStatusChangedAt + " DESC, quotations.id DESC"
 }
 
 func (r *billRepository) FindAll(f BillFilter, page, limit int) ([]entity.Quotation, int64, error) {

@@ -19,9 +19,10 @@ func listOrderTestDSN() string {
 	return "host=localhost port=5432 user=postgres password=postgres dbname=jk_db sslmode=disable"
 }
 
-// TestListOrderSQL pins how each bills tab is sorted. Both working tabs must sort
-// by the event being waited on rather than by the bill's id — a รอออกบิล bill is
-// reused as the customer keeps selling, so its id is only when it was first opened.
+// TestListOrderSQL pins how each bills tab is sorted. Every tab must sort by the
+// event being waited on rather than by the bill's id — a รอออกบิล bill is reused as
+// the customer keeps selling, so its id is only when it was first opened, and a
+// bill opened in July but cleared today must not sink to the bottom of เคลียร์แล้ว.
 func TestListOrderSQL(t *testing.T) {
 	db, err := gorm.Open(postgres.Open(listOrderTestDSN()), &gorm.Config{DryRun: true, Logger: logger.Discard})
 	if err != nil {
@@ -32,7 +33,14 @@ func TestListOrderSQL(t *testing.T) {
 	pendingIssue := StatusPendingIssue
 	pendingReview := StatusPendingReview
 	completed := StatusCompleted
+	cancelled := StatusCancelled
 	cleared := StatusCleared
+
+	const (
+		newestItem      = "MAX(qi.created_at)"
+		issuedAt        = "iq.id = quotations.issued_quotation_id"
+		statusChangedAt = "COALESCE(quotations.status_changed_at, quotations.created_at) DESC"
+	)
 
 	cases := []struct {
 		name   string
@@ -43,34 +51,42 @@ func TestListOrderSQL(t *testing.T) {
 		{
 			name:   "รอออกบิล sorts by the customer's newest item",
 			filter: BillFilter{Status: &pendingIssue},
-			want:   []string{"MAX(qi.created_at)", "qi.deleted_at IS NULL", "quotations.created_at) DESC", "quotations.id DESC"},
+			want:   []string{newestItem, "qi.deleted_at IS NULL", "quotations.created_at) DESC", "quotations.id DESC"},
+			reject: []string{issuedAt},
 		},
 		{
-			name:   "รอตรวจบิล sorts by when it was put into that status",
+			// รอตรวจบิล/สำเร็จ/เคลียร์แล้ว are all "after the bill was issued", so they
+			// share one key and a bill holds its place as it moves between them.
+			name:   "รอตรวจบิล sorts by when the bill was issued",
 			filter: BillFilter{Status: &pendingReview},
-			want:   []string{"quotations.status_changed_at DESC NULLS LAST", "quotations.id DESC"},
-			reject: []string{"MAX(qi.created_at)"},
+			want:   []string{issuedAt, "quotations.id DESC"},
+			reject: []string{newestItem, "ORDER BY quotations.id DESC"},
 		},
 		{
-			// id is when the bill was first OPENED. A bill opened in July but cleared
-			// today must not sink to the bottom of เคลียร์แล้ว, and updated_at is no
-			// good either: it moves when a closed bill's note is edited.
-			name:   "สำเร็จ sorts by when it was completed, not by id or updated_at",
+			name:   "สำเร็จ sorts by when the bill was issued, not by id or updated_at",
 			filter: BillFilter{Status: &completed},
-			want:   []string{"quotations.status_changed_at DESC NULLS LAST"},
-			reject: []string{"MAX(qi.created_at)", "ORDER BY quotations.id DESC", "quotations.updated_at"},
+			want:   []string{issuedAt},
+			reject: []string{newestItem, "ORDER BY quotations.id DESC", "quotations.updated_at"},
 		},
 		{
-			name:   "เคลียร์แล้ว sorts by when it was cleared",
+			name:   "เคลียร์แล้ว sorts by when the bill was issued",
 			filter: BillFilter{Status: &cleared},
-			want:   []string{"quotations.status_changed_at DESC NULLS LAST"},
-			reject: []string{"ORDER BY quotations.id DESC", "quotations.updated_at"},
+			want:   []string{issuedAt},
+			reject: []string{newestItem, "ORDER BY quotations.id DESC", "quotations.updated_at"},
 		},
 		{
-			name:   "no status filter keeps the original id order",
+			// A cancelled bill has no issuance to date it by.
+			name:   "ยกเลิก sorts by when it was cancelled",
+			filter: BillFilter{Status: &cancelled},
+			want:   []string{statusChangedAt, "quotations.id DESC"},
+			reject: []string{newestItem, issuedAt, "ORDER BY quotations.id DESC", "quotations.updated_at"},
+		},
+		{
+			// ทั้งหมด mixes statuses, so it dates every row by that row's own rule.
+			name:   "no status filter dates each row by its own status",
 			filter: BillFilter{},
-			want:   []string{"ORDER BY quotations.id DESC"},
-			reject: []string{"MAX(qi.created_at)"},
+			want:   []string{"CASE quotations.status", newestItem, issuedAt, "quotations.status_changed_at", "quotations.id DESC"},
+			reject: []string{"ORDER BY quotations.id DESC"},
 		},
 	}
 
