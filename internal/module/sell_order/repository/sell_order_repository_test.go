@@ -163,3 +163,52 @@ func TestActiveTotalsCountsClaimed(t *testing.T) {
 		t.Fatalf("weight = %g, want 25", totals.Weight)
 	}
 }
+
+// TestFindBillBySellOrderFollowsTheItems is the recovery's safety net. A fill
+// accumulates into whatever bill the customer has open, so several orders can end
+// up in one bill and the bill's own sell_order_id only remembers the last of them.
+// If the lookup asked the bill, an earlier order interrupted mid-fill would look
+// like one that never happened — and the next tick would sell it all over again.
+func TestFindBillBySellOrderFollowsTheItems(t *testing.T) {
+	db := openTestDB(t)
+	tx := db.Begin()
+	defer tx.Rollback()
+
+	repo := NewSellOrderRepository(tx)
+	const customer = uint(9_900_101)
+
+	first := seedOrder(t, tx, customer, 5, 60000)
+	second := seedOrder(t, tx, customer, 3, 60500)
+
+	// One shared bill: the customer's own line, then both fills appended to it.
+	// Its bill-level link names only the order that landed last.
+	bill := &entity.Quotation{
+		Code: "BILL-T-9900101", IsBill: true, Status: 10, Metal: "gold",
+		AutoSell: true, SellOrderID: &second.ID,
+		Items: []entity.QuotationItem{
+			{TypeName: "ขายเอง", Metal: "gold", Weight: 2, Price: 59000},
+			{TypeName: "ฟิลแรก", Metal: "gold", Weight: 5, Price: 60000, SellOrderID: &first.ID},
+			{TypeName: "ฟิลสอง", Metal: "gold", Weight: 3, Price: 60500, SellOrderID: &second.ID},
+		},
+	}
+	if err := tx.Create(bill).Error; err != nil {
+		t.Fatalf("seeding bill failed: %v", err)
+	}
+
+	for _, o := range []*entity.SellOrder{first, second} {
+		got, err := repo.FindBillBySellOrder(o.ID)
+		if err != nil {
+			t.Fatalf("FindBillBySellOrder(#%d): %v — the recovery would resell this order", o.ID, err)
+		}
+		if got.ID != bill.ID {
+			t.Errorf("order #%d resolved to bill %d, want %d", o.ID, got.ID, bill.ID)
+		}
+	}
+
+	// An order that never reached a bill must still come back empty, or the
+	// recovery would mark an unsold order as filled.
+	never := seedOrder(t, tx, customer, 1, 70000)
+	if got, err := repo.FindBillBySellOrder(never.ID); err == nil {
+		t.Errorf("an unfilled order resolved to bill %d", got.ID)
+	}
+}
