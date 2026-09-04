@@ -26,8 +26,13 @@ type BillRepository interface {
 	// FindPendingByCreator returns a customer's open "รอออกบิล" bill for the given
 	// metal, if any, so new sells accumulate into it instead of creating separate
 	// bills. Bills are single-metal, so selling silver never lands in a gold bill.
+	// Auto-sell fills go through it too: an automatic sale is an ordinary sell the
+	// customer did not have to press a button for.
 	FindPendingByCreator(createdBy uint, metal string, adminCreated bool) (*entity.Quotation, error)
-	AppendItems(billID uint, items []entity.QuotationItem) error
+	// AppendToBill adds items to an open bill and raises its total, in one
+	// transaction. sellOrderID (auto-sell only) additionally stamps the order's
+	// link onto the bill its items landed in.
+	AppendToBill(billID uint, items []entity.QuotationItem, amount float64, sellOrderID *uint) error
 	Update(bill *entity.Quotation) error
 	ReplaceItems(billID uint, items []entity.QuotationItem) error
 	// RemoveItem hard-deletes one item from a bill and recomputes its total_amount.
@@ -121,14 +126,40 @@ func (r *billRepository) FindPendingByCreator(createdBy uint, metal string, admi
 	return &bill, nil
 }
 
-func (r *billRepository) AppendItems(billID uint, items []entity.QuotationItem) error {
+func (r *billRepository) AppendToBill(billID uint, items []entity.QuotationItem, amount float64, sellOrderID *uint) error {
 	if len(items) == 0 {
 		return nil
 	}
 	for i := range items {
 		items[i].QuotationID = billID
 	}
-	return r.db.Create(&items).Error
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(&items).Error; err != nil {
+			return err
+		}
+		return tx.Model(&entity.Quotation{}).Where("id = ?", billID).
+			Updates(appendUpdates(amount, sellOrderID)).Error
+	})
+}
+
+// appendUpdates is everything an append changes on the bill row itself.
+func appendUpdates(amount float64, sellOrderID *uint) map[string]any {
+	updates := map[string]any{
+		// Incremented in SQL rather than written back from a total read moments ago:
+		// the auto-sell engine and the customer's own sell can land on the same bill
+		// at the same instant, and a read-modify-write drops one of the two amounts.
+		"total_amount": gorm.Expr("total_amount + ?", amount),
+		"updated_at":   time.Now(),
+	}
+	if sellOrderID != nil {
+		// The order's link follows its items into whatever bill they joined, stamped
+		// in the same transaction as the append because the boot recovery asks this
+		// column whether the fill happened — an append it cannot see is one the next
+		// tick makes all over again.
+		updates["auto_sell"] = true
+		updates["sell_order_id"] = *sellOrderID
+	}
+	return updates
 }
 
 // scope applies a BillFilter to a fresh bills query. Every read that has to agree

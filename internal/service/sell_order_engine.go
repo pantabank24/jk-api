@@ -16,8 +16,9 @@ import (
 )
 
 // SellOrderEngine fills customers' auto-sell orders: every tick it reads the live
-// price, claims the orders whose target it has reached, and turns each into a
-// normal "รอออกบิล" bill flagged auto_sell.
+// price, claims the orders whose target it has reached, and sells each exactly as
+// the customer would have by hand — the items accumulate into their open "รอออกบิล"
+// bill (flagged auto_sell) or start one when they have none.
 //
 // Correctness rests on three things:
 //   - the claim is a single UPDATE ... RETURNING, so no order is filled twice even
@@ -221,6 +222,14 @@ func (e *SellOrderEngine) fill(order *entity.SellOrder, price float64, cfg AutoS
 		}},
 	}
 
+	// Stamp the price before the bill exists. If the process dies between the two,
+	// the recovery needs to know what this fill was priced at, and the bill it
+	// lands in may hold the customer's manual sells too — its total no longer
+	// divides back into a unit price.
+	if err := e.orderRepo.RecordFillPrice(order.ID, price); err != nil {
+		log.Printf("⚠️  Auto-sell: order #%d recording fill price failed: %v", order.ID, err)
+	}
+
 	bill, err := e.billUC.CreateBill(req)
 	if err != nil {
 		log.Printf("⚠️  Auto-sell: order #%d bill creation failed: %v", order.ID, err)
@@ -274,9 +283,12 @@ func (e *SellOrderEngine) loadGoldType(order *entity.SellOrder) (*entity.GoldTyp
 }
 
 func (e *SellOrderEngine) notifyFilled(order *entity.SellOrder, bill *entity.Quotation, price float64) {
-	body := fmt.Sprintf("ราคารับซื้อถึง %s บาท ระบบขายทอง %s บาท ให้อัตโนมัติแล้ว ยอดรวม %s บาท (บิล %s)",
+	// This sale's own amount first, the bill's after it: the items may have joined a
+	// bill that already held earlier sells, and the customer is owed the figure for
+	// what just happened, not only the pile it landed in.
+	body := fmt.Sprintf("ราคารับซื้อถึง %s บาท ระบบขายทอง %s บาท ให้อัตโนมัติแล้ว ยอดขาย %s บาท (บิล %s ยอดรวม %s บาท)",
 		formatThaiAmount(price), formatWeight(order.Weight),
-		formatThaiAmount(bill.TotalAmount), bill.Code)
+		formatThaiAmount(price*order.Weight), bill.Code, formatThaiAmount(bill.TotalAmount))
 	if price > order.TargetPrice {
 		body += fmt.Sprintf(" · สูงกว่าเป้าที่ตั้งไว้ %s บาท", formatThaiAmount(order.TargetPrice))
 	}
@@ -317,9 +329,16 @@ func (e *SellOrderEngine) recoverStuck() {
 	for _, order := range stuck {
 		bill, findErr := e.orderRepo.FindBillBySellOrder(order.ID)
 		if findErr == nil && bill != nil {
-			price := bill.TotalAmount
-			if order.Weight > 0 {
-				price = bill.TotalAmount / order.Weight
+			// The price stamped at fill time, never one derived from the bill: these
+			// items may share the bill with sells the customer made by hand, whose
+			// total says nothing about this order's unit price. Falling back to the
+			// target keeps the row honest when the stamp itself is what failed.
+			price := order.TargetPrice
+			if order.FilledPrice != nil {
+				price = *order.FilledPrice
+			} else {
+				log.Printf("⚠️  Auto-sell: order #%d has no recorded fill price — completing at its target %.2f",
+					order.ID, order.TargetPrice)
 			}
 			if err := e.orderRepo.MarkFilled(order.ID, price, bill.ID); err != nil {
 				log.Printf("❌ Auto-sell: completing interrupted order #%d failed: %v", order.ID, err)

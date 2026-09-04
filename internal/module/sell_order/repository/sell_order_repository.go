@@ -41,14 +41,20 @@ type SellOrderRepository interface {
 	ClaimDue(price float64) ([]entity.SellOrder, error)
 	// MarkFilled completes a claimed order and links the bill it produced.
 	MarkFilled(id uint, price float64, billID uint) error
+	// RecordFillPrice stamps the price a claimed order is filling at, before the
+	// bill is written. A fill's items join whatever bill the customer has open, so
+	// that bill's total can no longer be divided back into a unit price — this is
+	// what the boot recovery reads to complete an interrupted fill.
+	RecordFillPrice(id uint, price float64) error
 	// ReleaseClaim puts a claimed order back on the market — used when the fill
 	// itself failed, so the next tick can retry instead of losing the order.
 	ReleaseClaim(id uint) error
 	// FindStuckFilling returns orders left mid-fill by a crash or restart.
 	FindStuckFilling() ([]entity.SellOrder, error)
-	// FindBillBySellOrder reports the bill an order already produced, if any. The
-	// boot recovery uses it to tell "the fill completed but we died before marking
-	// it" apart from "the fill never happened".
+	// FindBillBySellOrder reports the bill an order's items landed in, if any — its
+	// own new bill, or the customer's open one they were appended to. The boot
+	// recovery uses it to tell "the fill completed but we died before marking it"
+	// apart from "the fill never happened".
 	FindBillBySellOrder(orderID uint) (*entity.Quotation, error)
 }
 
@@ -158,10 +164,19 @@ func (r *sellOrderRepository) MarkFilled(id uint, price float64, billID uint) er
 	}).Error
 }
 
+func (r *sellOrderRepository) RecordFillPrice(id uint, price float64) error {
+	return r.db.Model(&entity.SellOrder{}).
+		Where("id = ? AND status = ?", id, entity.SellOrderFilling).
+		Updates(map[string]any{"filled_price": price, "updated_at": time.Now()}).Error
+}
+
 func (r *sellOrderRepository) ReleaseClaim(id uint) error {
 	return r.db.Model(&entity.SellOrder{}).
 		Where("id = ? AND status = ?", id, entity.SellOrderFilling).
-		Updates(map[string]any{"status": entity.SellOrderActive, "updated_at": time.Now()}).Error
+		// The price goes back with the claim: a released order never sold, and an
+		// abandoned attempt's price left on the row would read as a fill on an order
+		// that is still waiting.
+		Updates(map[string]any{"status": entity.SellOrderActive, "filled_price": nil, "updated_at": time.Now()}).Error
 }
 
 func (r *sellOrderRepository) FindStuckFilling() ([]entity.SellOrder, error) {

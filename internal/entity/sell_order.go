@@ -4,8 +4,8 @@ import "time"
 
 // Sell-order lifecycle. Filling is transient: the engine sets it inside the
 // claim transaction, so a crash mid-fill leaves a row the boot recovery can
-// resolve (bill exists → filled, otherwise → active) instead of a row that is
-// silently double-filled on the next tick.
+// resolve (items already landed in a bill → filled, otherwise → active) instead
+// of a row that is silently double-filled on the next tick.
 const (
 	SellOrderActive    = "active"
 	SellOrderFilling   = "filling"
@@ -15,7 +15,9 @@ const (
 
 // SellOrder is a customer's standing instruction to sell a fixed weight of metal
 // once the shop's real-time buy price reaches TargetPrice — a limit order. The
-// engine fills it by creating a normal "รอออกบิล" bill flagged auto_sell.
+// engine fills it exactly as a manual sell would: the items accumulate into the
+// customer's open "รอออกบิล" bill of the same metal (flagged auto_sell), or open a
+// new one when they have none.
 //
 // TargetPrice is compared against bar_buy (the price on the customer's screen,
 // after premium and spread), NOT the spot or mid price.

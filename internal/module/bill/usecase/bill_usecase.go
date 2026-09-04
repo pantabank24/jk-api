@@ -54,9 +54,11 @@ type CreateBillRequest struct {
 	GoldRound   string `json:"-"`
 	GoldPriceID *uint  `json:"-"`
 	Note        string `json:"note"`
-	// AutoSell marks a bill created by the auto-sell engine. Such a bill always
-	// stands alone (SellOrderID must point at exactly one bill) instead of
-	// accumulating into the customer's open bill the way a manual sell does.
+	// AutoSell marks a fill by the auto-sell engine. It does not change where the
+	// items land — an automatic sale accumulates into the customer's open bill
+	// exactly like one they pressed the button for. It only flags the bill and
+	// silences the generic sell notification, because the engine sends its own,
+	// which knows the target and the price it actually filled at.
 	// Set by the engine only — never from the payload.
 	AutoSell    bool                    `json:"-"`
 	SellOrderID *uint                   `json:"-"`
@@ -168,38 +170,44 @@ func groupItemsByMetal(reqItems []CreateBillItemRequest) ([]string, map[string][
 // upsertPendingBill appends the items to the customer's open "รอออกบิล" bill of
 // the SAME metal, or starts a new bill when they have none. Selling silver while
 // a gold bill is still pending therefore opens a separate silver bill.
+//
+// Auto-sell fills take this same path: the engine's sale is the customer's sale,
+// so it accumulates like any other instead of opening a bill of its own.
 func (u *billUsecase) upsertPendingBill(req *CreateBillRequest, metal string, items []entity.QuotationItem) (*entity.Quotation, error) {
 	var totalAmount float64
 	for _, item := range items {
 		totalAmount += item.Total
 	}
 
-	// An auto-sell fill always gets its own bill: the order links to one bill, and
-	// merging it into whatever the customer happens to have open would bury the
-	// automatic sale inside a manual one.
-	if !req.AutoSell {
-		if existing, err := u.billRepo.FindPendingByCreator(req.CreatedByUserID, metal, req.AdminCreated); err == nil && existing != nil {
-			if err := u.billRepo.AppendItems(existing.ID, items); err != nil {
-				return nil, err
-			}
-			existing.TotalAmount += totalAmount
-			if err := u.billRepo.Update(existing); err != nil {
-				return nil, err
-			}
-			// The bill keeps its original code and created_at, so without this the
-			// customer gets no sign that the sell landed (staff selling on their
-			// behalf especially).
-			if existing.CreatedBy != nil {
-				_ = u.notifRepo.Create(&entity.Notification{
-					UserID: *existing.CreatedBy,
-					Type:   "bill_updated",
-					Title:  "เพิ่มรายการขายแล้ว",
-					Body: fmt.Sprintf("เพิ่ม %d รายการ (%s) เข้าบิล %s แล้ว ยอดรวม %s บาท",
-						len(items), metalLabel(metal), existing.Code, formatAmount(existing.TotalAmount)),
-				})
-			}
-			return u.billRepo.FindByID(existing.ID)
+	if existing, err := u.billRepo.FindPendingByCreator(req.CreatedByUserID, metal, req.AdminCreated); err == nil && existing != nil {
+		// Only a fill carries an order to link; a manual sell leaves the bill's
+		// auto_sell flag exactly as it found it.
+		var sellOrderID *uint
+		if req.AutoSell {
+			sellOrderID = req.SellOrderID
 		}
+		if err := u.billRepo.AppendToBill(existing.ID, items, totalAmount, sellOrderID); err != nil {
+			return nil, err
+		}
+		// Re-read rather than adjust the copy in hand: the total was incremented in
+		// SQL, so this row is the only place the new figure is correct.
+		updated, err := u.billRepo.FindByID(existing.ID)
+		if err != nil {
+			return nil, err
+		}
+		// The bill keeps its original code and created_at, so without this the
+		// customer gets no sign that the sell landed (staff selling on their
+		// behalf especially). A fill is announced by the engine instead.
+		if updated.CreatedBy != nil && !req.AutoSell {
+			_ = u.notifRepo.Create(&entity.Notification{
+				UserID: *updated.CreatedBy,
+				Type:   "bill_updated",
+				Title:  "เพิ่มรายการขายแล้ว",
+				Body: fmt.Sprintf("เพิ่ม %d รายการ (%s) เข้าบิล %s แล้ว ยอดรวม %s บาท",
+					len(items), metalLabel(metal), updated.Code, formatAmount(updated.TotalAmount)),
+			})
+		}
+		return updated, nil
 	}
 
 	var code string
