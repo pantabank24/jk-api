@@ -110,6 +110,13 @@ func TestAutoSellMergesLikeAManualSell(t *testing.T) {
 		if bills.appendedOrder == nil || *bills.appendedOrder != orderID {
 			t.Errorf("sell order link = %v, want %d", bills.appendedOrder, orderID)
 		}
+		// And on the line itself, which is what the chip in หน้าบิล / หน้าออกใบเสนอราคา
+		// reads: the bill now holds the customer's manual sells too, so its own flag
+		// cannot say which of these lines the engine sold.
+		if len(bills.appendedItems) != 1 || bills.appendedItems[0].SellOrderID == nil ||
+			*bills.appendedItems[0].SellOrderID != orderID {
+			t.Errorf("appended items = %+v, want one carrying sell order %d", bills.appendedItems, orderID)
+		}
 	})
 
 	t.Run("the fill is announced by the engine, not by the generic sell notice", func(t *testing.T) {
@@ -171,8 +178,67 @@ func TestAutoSellMergesLikeAManualSell(t *testing.T) {
 			t.Errorf("new bill = %q auto_sell=%v status=%d, want BILL0002 auto_sell=true status=%d",
 				got.Code, got.AutoSell, got.Status, repository.StatusPendingIssue)
 		}
+		if len(got.Items) != 1 || got.Items[0].SellOrderID == nil || *got.Items[0].SellOrderID != orderID {
+			t.Errorf("new bill items = %+v, want one carrying sell order %d", got.Items, orderID)
+		}
 		if len(notifs.sent) != 0 {
 			t.Errorf("sent %+v, want none — the engine announces its own fill", notifs.sent)
+		}
+	})
+}
+
+// TestCarryFillMarks covers what an edit must not destroy. Replacing a bill's
+// items throws away their ids, so a master fixing one line would otherwise strip
+// the auto-sell mark off every other line in the bill — turning a sale the engine
+// made into one the customer appears to have walked in with.
+func TestCarryFillMarks(t *testing.T) {
+	orderID := uint(42)
+	old := []entity.QuotationItem{
+		{TypeID: "1", Weight: 5, Price: 52000, SellOrderID: &orderID},
+		{TypeID: "1", Weight: 2, Price: 51000},
+	}
+
+	t.Run("an untouched line keeps its order", func(t *testing.T) {
+		edited := []entity.QuotationItem{
+			{TypeID: "1", Weight: 2, Price: 51500}, // the line the master corrected
+			{TypeID: "1", Weight: 5, Price: 52000},
+		}
+		carryFillMarks(old, edited)
+
+		if edited[1].SellOrderID == nil || *edited[1].SellOrderID != orderID {
+			t.Errorf("the auto-sell line lost its order: %+v", edited[1])
+		}
+		if edited[0].SellOrderID != nil {
+			t.Errorf("a hand-entered line was marked as auto-sell: %+v", edited[0])
+		}
+	})
+
+	t.Run("a line the master rewrote drops the mark", func(t *testing.T) {
+		// It is no longer the line the engine sold, and claiming otherwise would put
+		// the shop's name behind a weight nobody's system chose.
+		edited := []entity.QuotationItem{{TypeID: "1", Weight: 4, Price: 52000}}
+		carryFillMarks(old, edited)
+
+		if edited[0].SellOrderID != nil {
+			t.Errorf("an edited line kept the mark: %+v", edited[0])
+		}
+	})
+
+	t.Run("one order is claimed once, even by identical lines", func(t *testing.T) {
+		edited := []entity.QuotationItem{
+			{TypeID: "1", Weight: 5, Price: 52000},
+			{TypeID: "1", Weight: 5, Price: 52000},
+		}
+		carryFillMarks(old, edited)
+
+		marked := 0
+		for _, it := range edited {
+			if it.SellOrderID != nil {
+				marked++
+			}
+		}
+		if marked != 1 {
+			t.Errorf("%d lines claimed order %d, want exactly 1", marked, orderID)
 		}
 	})
 }

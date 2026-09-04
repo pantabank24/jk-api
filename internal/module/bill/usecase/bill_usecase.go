@@ -179,13 +179,19 @@ func (u *billUsecase) upsertPendingBill(req *CreateBillRequest, metal string, it
 		totalAmount += item.Total
 	}
 
-	if existing, err := u.billRepo.FindPendingByCreator(req.CreatedByUserID, metal, req.AdminCreated); err == nil && existing != nil {
-		// Only a fill carries an order to link; a manual sell leaves the bill's
-		// auto_sell flag exactly as it found it.
-		var sellOrderID *uint
-		if req.AutoSell {
-			sellOrderID = req.SellOrderID
+	// Only a fill carries an order to link; a manual sell leaves the bill's
+	// auto_sell flag exactly as it found it. The stamp goes on the items as well as
+	// the bill: the bill can hold both kinds of line, so "which of these did the
+	// engine sell" is a question only the line itself can answer.
+	var sellOrderID *uint
+	if req.AutoSell {
+		sellOrderID = req.SellOrderID
+		for i := range items {
+			items[i].SellOrderID = sellOrderID
 		}
+	}
+
+	if existing, err := u.billRepo.FindPendingByCreator(req.CreatedByUserID, metal, req.AdminCreated); err == nil && existing != nil {
 		if err := u.billRepo.AppendToBill(existing.ID, items, totalAmount, sellOrderID); err != nil {
 			return nil, err
 		}
@@ -437,6 +443,7 @@ func (u *billUsecase) UpdateBill(id uint, req *UpdateBillRequest) (*entity.Quota
 		// Items were replaced wholesale, so re-derive which list the bill belongs
 		// to (a mixed edit keeps it on the gold list — see migration 85).
 		bill.Metal = uniformMetal(items)
+		carryFillMarks(bill.Items, items)
 		if err := u.billRepo.ReplaceItems(bill.ID, items); err != nil {
 			return nil, err
 		}
@@ -446,6 +453,28 @@ func (u *billUsecase) UpdateBill(id uint, req *UpdateBillRequest) (*entity.Quota
 		return nil, err
 	}
 	return u.billRepo.FindByID(id)
+}
+
+// carryFillMarks re-attaches each auto-sell line's order to the edited item that
+// still matches it. An edit replaces a bill's items wholesale, and losing the mark
+// would quietly turn a sale the engine made into one the customer appears to have
+// entered by hand. A line the master actually changed no longer matches and drops
+// the mark, which is the honest outcome: it is no longer the line that was sold.
+func carryFillMarks(old, edited []entity.QuotationItem) {
+	claimed := make([]bool, len(old))
+	for i := range edited {
+		for j := range old {
+			if claimed[j] || old[j].SellOrderID == nil {
+				continue
+			}
+			if old[j].TypeID != edited[i].TypeID || old[j].Weight != edited[i].Weight || old[j].Price != edited[i].Price {
+				continue
+			}
+			edited[i].SellOrderID = old[j].SellOrderID
+			claimed[j] = true
+			break
+		}
+	}
 }
 
 // RemoveBillItem lets the master drop an item the customer submitted while the bill

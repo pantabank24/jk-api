@@ -54,7 +54,8 @@ type SellOrderRepository interface {
 	// FindBillBySellOrder reports the bill an order's items landed in, if any — its
 	// own new bill, or the customer's open one they were appended to. The boot
 	// recovery uses it to tell "the fill completed but we died before marking it"
-	// apart from "the fill never happened".
+	// apart from "the fill never happened", so it is answered from the items, which
+	// carry their order permanently.
 	FindBillBySellOrder(orderID uint) (*entity.Quotation, error)
 }
 
@@ -187,7 +188,13 @@ func (r *sellOrderRepository) FindStuckFilling() ([]entity.SellOrder, error) {
 
 func (r *sellOrderRepository) FindBillBySellOrder(orderID uint) (*entity.Quotation, error) {
 	var bill entity.Quotation
-	if err := r.db.Where("sell_order_id = ?", orderID).Order("id DESC").First(&bill).Error; err != nil {
+	// Asked of the items, not of the bill: a fill joins the customer's open bill, so
+	// several orders can share one, and the bill's own sell_order_id only remembers
+	// whichever landed last. The item keeps its order for good.
+	if err := r.db.
+		Joins("JOIN quotation_items qi ON qi.quotation_id = quotations.id AND qi.deleted_at IS NULL").
+		Where("qi.sell_order_id = ?", orderID).
+		Order("quotations.id DESC").First(&bill).Error; err != nil {
 		return nil, err
 	}
 	return &bill, nil
