@@ -29,7 +29,9 @@ func SetupBillRoutes(v1 fiber.Router, db *gorm.DB, cfg *config.Config) {
 		bills.Get("/", middleware.RequirePermission(db, "bills.read"), ctrl.GetAllBills)
 		bills.Get("/:id", middleware.RequirePermission(db, "bills.read"), ctrl.GetBillByID)
 		bills.Post("/", middleware.RequireAnyPermission(db, "bills.create", "bills.sell"), ctrl.CreateBill)
-		bills.Patch("/:id", middleware.RequirePermission(db, "bills.create"), ctrl.UpdateBill)
+		// Staff-only: nothing on any screen calls this, and gated on bills.create it
+		// let a customer rewrite the price of any รอออกบิล bill, their own or not.
+		bills.Patch("/:id", middleware.RequirePermission(db, "bills.issue"), ctrl.UpdateBill)
 		bills.Post("/:id/issue", middleware.RequirePermission(db, "bills.issue"), ctrl.IssueBill)
 		bills.Post("/:id/approve", middleware.RequirePermission(db, "bills.approve"), ctrl.ApproveBill)
 		bills.Post("/:id/cancel", middleware.RequirePermission(db, "bills.approve"), ctrl.CancelBill)

@@ -107,6 +107,16 @@ func (ctrl *ConfigController) Update(c *fiber.Ctx) error {
 		if err := validateFloatRange(req.Value, service.RealtimeSpreadMin, service.RealtimeSpreadMax); err != nil {
 			return response.BadRequest(c, "ส่วนต่างราคาต้องเป็นตัวเลขระหว่าง 0 ถึง 1000 บาท")
 		}
+	// The sell price bands decide whether a customer's price is accepted, so an
+	// empty or runaway value must not slip through (0 is valid: exact match).
+	case service.KeySellToleranceRealtime, service.KeySellToleranceAssociation:
+		if err := validateFloatRange(req.Value, service.SellToleranceGoldMin, service.SellToleranceGoldMax); err != nil {
+			return response.BadRequest(c, "ราคาคลาดเคลื่อนของทองต้องเป็นตัวเลขระหว่าง 0 ถึง 1000 บาท")
+		}
+	case service.KeySellToleranceSilver:
+		if err := validateFloatRange(req.Value, service.SellToleranceSilverMin, service.SellToleranceSilverMax); err != nil {
+			return response.BadRequest(c, "ราคาคลาดเคลื่อนของเงินต้องเป็นตัวเลขระหว่าง 0 ถึง 10000 บาท/กก.")
+		}
 	// Auto-sell reaches live money with no human in the loop, so its numbers are
 	// validated here as well as clamped on read.
 	case service.KeyAutoSellMaxSlippage:

@@ -20,6 +20,9 @@ import (
 func SetupV1Routes(api fiber.Router, db *gorm.DB, cfg *config.Config, cronSvc *service.GoldPriceCron, sellEngine *service.SellOrderEngine) {
 	v1 := api.Group("/v1")
 
+	// Closed accounts lose their existing tokens too, not only the next login.
+	middleware.EnableActiveUserCheck(db)
+
 	// Shared log repository
 	lRepo := logRepo.NewLogRepository(db)
 

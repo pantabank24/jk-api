@@ -19,21 +19,24 @@ func ActivityLogger(repo logRepo.LogRepository) fiber.Handler {
 		// Run the actual handler first
 		err := c.Next()
 
-		path := c.Path()
+		// Fiber's strings point into its pooled request buffer, and the row below is
+		// written from another goroutine after that buffer has gone to the next
+		// request — which is how logs got a method of "OPT" and paths spliced from
+		// two requests. Assigning a string does not copy it; strings.Clone does.
+		path := strings.Clone(c.Path())
 		if path == "/health" || strings.HasPrefix(path, "/uploads") {
 			return err
 		}
 
 		durationMs := time.Since(start).Milliseconds()
 
-		// Copy values before spawning goroutine (fiber context is pooled)
-		method      := c.Method()
+		method      := strings.Clone(c.Method())
 		statusCode  := c.Response().StatusCode()
-		ip          := c.IP()
-		userAgent   := c.Get("User-Agent")
-		description := GetActivityDescription(c)
+		ip          := strings.Clone(c.IP())
+		userAgent   := strings.Clone(c.Get("User-Agent"))
+		description := strings.Clone(GetActivityDescription(c))
 		targetUser  := GetActivityTarget(c)
-		refCode     := GetActivityRef(c)
+		refCode     := strings.Clone(GetActivityRef(c))
 		detail      := GetActivityDetail(c)
 
 		var userIDPtr *uint

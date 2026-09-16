@@ -2,14 +2,71 @@ package middleware
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
+	"sync"
+	"time"
 
 	"jk-api/config"
+	"jk-api/internal/entity"
 	jwtPkg "jk-api/pkg/jwt"
 	"jk-api/pkg/response"
 
 	"github.com/gofiber/fiber/v2"
+	"gorm.io/gorm"
 )
+
+// activeUserTTL is how long a user's is_active answer is reused. Every open page
+// polls the realtime price every two seconds, so asking the database on each
+// request would be pure load; this is the longest a deactivated account's
+// existing token keeps working.
+const activeUserTTL = 30 * time.Second
+
+var (
+	activeUserDB    *gorm.DB
+	activeUserMu    sync.RWMutex
+	activeUserCache = map[uint]activeUserEntry{}
+)
+
+type activeUserEntry struct {
+	active    bool
+	checkedAt time.Time
+}
+
+// EnableActiveUserCheck makes AuthMiddleware refuse tokens whose user has since
+// been deactivated or deleted. Without it a JWT stays valid for its full 24h
+// after the account is closed — and /auth/refresh extends that indefinitely.
+func EnableActiveUserCheck(db *gorm.DB) {
+	activeUserDB = db
+}
+
+// userIsActive reports whether the user may still use a token, caching the
+// answer for activeUserTTL.
+func userIsActive(userID uint) bool {
+	if activeUserDB == nil {
+		return true
+	}
+	activeUserMu.RLock()
+	entry, ok := activeUserCache[userID]
+	activeUserMu.RUnlock()
+	if ok && time.Since(entry.checkedAt) < activeUserTTL {
+		return entry.active
+	}
+
+	var user entity.User
+	err := activeUserDB.Select("id", "is_active").First(&user, userID).Error
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		// A database hiccup is not proof the account was closed. Let the request
+		// through — its handler needs the database too — and ask again next time.
+		return true
+	}
+	active := err == nil && user.IsActive
+
+	activeUserMu.Lock()
+	activeUserCache[userID] = activeUserEntry{active: active, checkedAt: time.Now()}
+	activeUserMu.Unlock()
+	return active
+}
 
 // AuthMiddleware validates JWT token and sets user context
 func AuthMiddleware(cfg *config.Config) fiber.Handler {
@@ -28,6 +85,9 @@ func AuthMiddleware(cfg *config.Config) fiber.Handler {
 		claims, err := jwtPkg.ParseToken(cfg.JWTSecret, tokenParts[1])
 		if err != nil {
 			return response.Unauthorized(c, "Invalid or expired token")
+		}
+		if !userIsActive(claims.UserID) {
+			return response.Unauthorized(c, "บัญชีนี้ถูกปิดใช้งาน")
 		}
 
 		// Set user info in context locals

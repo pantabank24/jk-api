@@ -3,6 +3,7 @@ package controller
 import (
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -152,12 +153,27 @@ func (ctrl *BillController) CreateBill(c *fiber.Ctx) error {
 		}
 	}
 
+	// Every amount in the bill is derived here rather than taken from the
+	// payload: BILL1740 was built by curl-posting a price of 100,000 that no
+	// screen ever showed.
+	pricing, err := service.PriceSellItems(ctrl.db, req.Items, !staffSelling, status.PriceMode)
+	if err != nil {
+		ctrl.logRejectedSell(c, &req, sellCustomer, status, err)
+		return response.BadRequest(c, err.Error())
+	}
+	req.Items = pricing.Items
+
 	// Stamp the gold-price round for the document. Real-time only applies during
 	// the real-time window; otherwise (incl. staff selling after hours) the latest
 	// association round is used.
 	if status.PriceMode == service.PriceModeRealtime {
-		// Lock a snapshot of the real-time price for this document.
-		req.GoldRound, req.GoldPriceID = service.SnapshotRealtimeRound(ctrl.db)
+		// Lock a snapshot of the real-time price for this document — the very
+		// reading the customer's price was checked against, when there was one.
+		if pricing.RealtimeBuy > 0 {
+			req.GoldRound, req.GoldPriceID = service.SaveRealtimeRound(ctrl.db, pricing.RealtimeBuy, pricing.RealtimeSell)
+		} else {
+			req.GoldRound, req.GoldPriceID = service.SnapshotRealtimeRound(ctrl.db)
+		}
 	} else {
 		// Stamp the association gold-price round in effect now (for reporting).
 		req.GoldRound, req.GoldPriceID = service.CurrentRound(ctrl.db)
@@ -185,7 +201,7 @@ func (ctrl *BillController) CreateBill(c *fiber.Ctx) error {
 	if err != nil {
 		return response.BadRequest(c, err.Error())
 	}
-	ctrl.logSell(c, &req, bill, sellCustomer, status)
+	ctrl.logSell(c, &req, pricing, bill, sellCustomer, status)
 	// The sell just grew the shop's รอออกบิล pile — check it against the
 	// threshold. Driven off the REQUEST's metals, not the returned bill: a payload
 	// covering both metals is split into one bill per metal and only the first
@@ -205,6 +221,15 @@ type sellLogItem struct {
 	Weight   float64 `json:"weight"`
 	PerGram  float64 `json:"per_gram"`
 	Total    float64 `json:"total"`
+	// The price the server held at that moment and how far the customer's price
+	// sat from it. Absent on staff sells, whose typed price is not compared.
+	ServerPrice *float64 `json:"server_price,omitempty"`
+	PriceDiff   *float64 `json:"price_diff,omitempty"`
+	Tolerance   *float64 `json:"tolerance,omitempty"`
+	// What the browser sent, recorded only when the server's arithmetic came out
+	// different — a browser never does that, so it marks a hand-built request.
+	ClientPerGram *float64 `json:"client_per_gram,omitempty"`
+	ClientTotal   *float64 `json:"client_total,omitempty"`
 }
 
 // sellLogDetail is the evidence snapshot for one sell click. It is deliberately
@@ -223,6 +248,8 @@ type sellLogDetail struct {
 	TotalWeight float64       `json:"total_weight"`
 	TotalAmount float64       `json:"total_amount"`
 	Items       []sellLogItem `json:"items"`
+	// Reason is why a sell was refused (kind "sell_rejected" only).
+	Reason string `json:"reason,omitempty"`
 }
 
 // logSell records the sell click in the activity log with the full price/weight
@@ -231,6 +258,7 @@ type sellLogDetail struct {
 func (ctrl *BillController) logSell(
 	c *fiber.Ctx,
 	req *usecase.CreateBillRequest,
+	pricing *service.SellPricing,
 	bill *entity.Quotation,
 	sellCustomer *entity.User,
 	status service.SalesStatus,
@@ -247,21 +275,29 @@ func (ctrl *BillController) logSell(
 	}
 	// Price is quoted per item, so a multi-item click has no single price; the
 	// per-item lines carry it and the header keeps only the summable figures.
-	for _, it := range req.Items {
-		metal := it.Metal
-		if metal == "" {
-			metal = "gold"
-		}
-		detail.Items = append(detail.Items, sellLogItem{
+	for i, it := range req.Items {
+		line := sellLogItem{
 			TypeName: it.TypeName,
-			Metal:    metal,
+			Metal:    it.Metal,
 			Price:    it.Price,
 			Percent:  it.Percent,
 			Plus:     it.Plus,
 			Weight:   it.Weight,
 			PerGram:  it.PerGram,
 			Total:    it.Total,
-		})
+		}
+		if i < len(pricing.Lines) {
+			priced := pricing.Lines[i]
+			if priced.ServerPrice != nil {
+				diff := it.Price - *priced.ServerPrice
+				line.ServerPrice, line.PriceDiff, line.Tolerance = priced.ServerPrice, &diff, priced.Tolerance
+			}
+			if math.Abs(priced.ClientTotal-it.Total) > 0.01 || math.Abs(priced.ClientPerGram-it.PerGram) > 0.01 {
+				clientPerGram, clientTotal := priced.ClientPerGram, priced.ClientTotal
+				line.ClientPerGram, line.ClientTotal = &clientPerGram, &clientTotal
+			}
+		}
+		detail.Items = append(detail.Items, line)
 		detail.TotalWeight += it.Weight
 		detail.TotalAmount += it.Total
 	}
@@ -288,6 +324,80 @@ func (ctrl *BillController) logSell(
 	} else {
 		middleware.SetActivityTarget(c, middleware.GetUserID(c))
 	}
+}
+
+// logRejectedSell records a sell the server refused, with the lines exactly as
+// they were submitted. A screen only produces one of these when the price moved
+// under the customer, so a run of them on one account is worth a look — and
+// without this row a refused attempt left nothing but a bare 400.
+func (ctrl *BillController) logRejectedSell(
+	c *fiber.Ctx,
+	req *usecase.CreateBillRequest,
+	sellCustomer *entity.User,
+	status service.SalesStatus,
+	cause error,
+) {
+	detail := sellLogDetail{
+		Kind:      "sell_rejected",
+		PriceMode: status.PriceMode,
+		OnBehalf:  sellCustomer != nil,
+		Reason:    cause.Error(),
+		Items:     make([]sellLogItem, 0, len(req.Items)),
+	}
+	var rejection *service.SellRejection
+	errors.As(cause, &rejection)
+	for i, it := range req.Items {
+		metal := it.Metal
+		if metal == "" {
+			metal = "gold"
+		}
+		line := sellLogItem{
+			TypeName: it.TypeName,
+			Metal:    metal,
+			Price:    it.Price,
+			Percent:  it.Percent,
+			Plus:     it.Plus,
+			Weight:   it.Weight,
+			PerGram:  it.PerGram,
+			Total:    it.Total,
+		}
+		if rejection != nil && rejection.Item == i && rejection.ServerPrice > 0 {
+			server, tol := rejection.ServerPrice, rejection.Tolerance
+			diff := it.Price - server
+			line.ServerPrice, line.PriceDiff, line.Tolerance = &server, &diff, &tol
+		}
+		if i == 0 {
+			detail.Metal = metal
+		}
+		detail.Items = append(detail.Items, line)
+		detail.TotalWeight += it.Weight
+		detail.TotalAmount += it.Total
+	}
+
+	who := "ลูกค้ากดขาย"
+	if sellCustomer != nil {
+		who = fmt.Sprintf("พนักงานกดขายแทนลูกค้า %s", sellCustomer.Name)
+	}
+	middleware.SetActivityDescription(c, fmt.Sprintf(
+		"ระบบไม่รับรายการ: %s %s — %s", who, sellItemNames(req.Items), cause.Error(),
+	))
+	middleware.SetActivityDetail(c, detail)
+	if sellCustomer != nil {
+		middleware.SetActivityTarget(c, sellCustomer.ID)
+	} else {
+		middleware.SetActivityTarget(c, middleware.GetUserID(c))
+	}
+}
+
+// ownsBill reports whether the caller may see or touch this bill. Only customers
+// are narrowed, to the bills they own: every bill id is a small sequential
+// number, so without this any customer could read any other customer's bill.
+// Staff scoping is left exactly as it was.
+func ownsBill(c *fiber.Ctx, bill *entity.Quotation) bool {
+	if middleware.GetRoleName(c) != "customer" {
+		return true
+	}
+	return bill != nil && bill.CreatedBy != nil && *bill.CreatedBy == middleware.GetUserID(c)
 }
 
 // tagBill points the activity log at the customer the bill belongs to and the
@@ -484,7 +594,7 @@ func (ctrl *BillController) GetBillByID(c *fiber.Ctx) error {
 		return response.BadRequest(c, "Invalid bill ID")
 	}
 	bill, err := ctrl.billUsecase.GetBillByID(uint(id))
-	if err != nil {
+	if err != nil || !ownsBill(c, bill) {
 		return response.NotFound(c, "Bill not found")
 	}
 	return response.Success(c, "Bill retrieved", bill)
@@ -806,6 +916,9 @@ func (ctrl *BillController) GetDeliveryLogs(c *fiber.Ctx) error {
 	if err != nil {
 		return response.BadRequest(c, "Invalid bill ID")
 	}
+	if bill, err := ctrl.billUsecase.GetBillByID(uint(id)); err != nil || !ownsBill(c, bill) {
+		return response.NotFound(c, "Bill not found")
+	}
 	logs, err := ctrl.billUsecase.GetDeliveryLogs(uint(id))
 	if err != nil {
 		return response.InternalServerError(c, err.Error())
@@ -853,7 +966,10 @@ func (ctrl *BillController) PartialDeliver(c *fiber.Ctx) error {
 
 func (ctrl *BillController) GetBillBalance(c *fiber.Ctx) error {
 	var userID uint
-	if id := c.Query("user_id"); id != "" {
+	// A customer's balance is their own; the user_id lookup is for staff pages.
+	if middleware.GetRoleName(c) == "customer" {
+		userID = middleware.GetUserID(c)
+	} else if id := c.Query("user_id"); id != "" {
 		parsed, err := strconv.ParseUint(id, 10, 32)
 		if err != nil {
 			return response.BadRequest(c, "Invalid user_id")
@@ -878,6 +994,9 @@ func (ctrl *BillController) UploadImages(c *fiber.Ctx) error {
 	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
 	if err != nil {
 		return response.BadRequest(c, "Invalid bill ID")
+	}
+	if bill, err := ctrl.billUsecase.GetBillByID(uint(id)); err != nil || !ownsBill(c, bill) {
+		return response.NotFound(c, "Bill not found")
 	}
 	form, err := c.MultipartForm()
 	if err != nil {
