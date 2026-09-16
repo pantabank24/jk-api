@@ -1,6 +1,8 @@
 package controller
 
 import (
+	"strings"
+
 	"jk-api/internal/entity"
 	"jk-api/internal/middleware"
 	"jk-api/internal/module/auth/usecase"
@@ -32,12 +34,15 @@ func (ctrl *AuthController) Login(c *fiber.Ctx) error {
 
 	result, err := ctrl.authUsecase.Login(&req)
 
-	// Record login log asynchronously
+	// Record login log asynchronously. IP and user agent are cloned: fiber's
+	// strings share its pooled buffer, which the next request reuses before the
+	// goroutine below writes the row.
+	userAgent := strings.Clone(c.Get("User-Agent"))
 	loginLog := &entity.LoginLog{
 		Email:     req.Email,
-		IP:        c.IP(),
-		UserAgent: c.Get("User-Agent"),
-		Device:    useragent.ParseDevice(c.Get("User-Agent")),
+		IP:        strings.Clone(c.IP()),
+		UserAgent: userAgent,
+		Device:    useragent.ParseDevice(userAgent),
 		Success:   err == nil,
 	}
 	if err != nil {
