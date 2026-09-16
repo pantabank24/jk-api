@@ -427,13 +427,15 @@ func (ctrl *BillController) logRejectedSell(
 		detail.TotalAmount += it.Total
 	}
 
-	who := "ลูกค้ากดขาย"
+	// A customer confirming a locked price sends no priced line at all, so there
+	// is nothing to name — say what they were doing instead.
+	what := "ลูกค้ายืนยันการขาย"
 	if sellCustomer != nil {
-		who = fmt.Sprintf("พนักงานกดขายแทนลูกค้า %s", sellCustomer.Name)
+		what = fmt.Sprintf("พนักงานกดขายแทนลูกค้า %s %s", sellCustomer.Name, sellItemNames(req.Items))
+	} else if len(req.Items) > 0 {
+		what = fmt.Sprintf("ลูกค้ากดขาย %s", sellItemNames(req.Items))
 	}
-	middleware.SetActivityDescription(c, fmt.Sprintf(
-		"ระบบไม่รับรายการ: %s %s — %s", who, sellItemNames(req.Items), cause.Error(),
-	))
+	middleware.SetActivityDescription(c, fmt.Sprintf("ระบบไม่รับรายการ: %s — %s", what, cause.Error()))
 	middleware.SetActivityDetail(c, detail)
 	if sellCustomer != nil {
 		middleware.SetActivityTarget(c, sellCustomer.ID)
