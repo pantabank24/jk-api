@@ -15,36 +15,6 @@ import (
 	"gorm.io/gorm"
 )
 
-// Config keys holding how far the price a customer submits may sit from the
-// price the server derives at the same moment. The customer is paid the price
-// they confirmed as long as it is inside the band; outside it the sell is
-// refused. The band exists because the confirm dialog freezes the price for up
-// to ten seconds while the realtime feed keeps moving — without it a curl call
-// could name any price at all (BILL1740).
-const (
-	KeySellToleranceRealtime    = "sell_price_tolerance_realtime_thb"
-	KeySellToleranceAssociation = "sell_price_tolerance_association_thb"
-	KeySellToleranceSilver      = "sell_price_tolerance_silver_thb_per_kg"
-)
-
-// Accepted ranges. 0 means the prices must match exactly — unlike the auto-sell
-// slippage setting, it never means "unlimited".
-const (
-	SellToleranceGoldMin   = 0.0
-	SellToleranceGoldMax   = 1000.0
-	SellToleranceSilverMin = 0.0
-	SellToleranceSilverMax = 10000.0
-)
-
-// Defaults when a key was never saved. Realtime needs slack for the confirm
-// dialog; the association and silver prices only change between rounds, so a
-// mismatch there means the page was left open across one.
-const (
-	defaultSellToleranceRealtime    = 30.0
-	defaultSellToleranceAssociation = 0.0
-	defaultSellToleranceSilver      = 0.0
-)
-
 // Weight bounds the sell screen enforces (billCalculate.tsx). Gold is in บาททอง,
 // silver in grams.
 const (
@@ -54,267 +24,207 @@ const (
 	silverWeightMaxG = 100000.0
 )
 
-// priceEpsilon absorbs float noise in JSON numbers so 68278 and 68278.0000001
-// compare equal under a zero tolerance.
-const priceEpsilon = 0.005
-
-// SellRejection is a sell the server refused. Reason is written for the person
-// who pressed the button; the other fields are evidence for the activity log.
+// SellRejection is a sale the server refused. Reason is written for the person
+// who pressed the button; Item points at the line in a staff payload.
 type SellRejection struct {
 	Reason string
-	// Item is the index of the offending line in the payload.
-	Item int
-	// ServerPrice is set only when the refusal is about the price.
-	ServerPrice float64
-	ClientPrice float64
-	Tolerance   float64
+	Item   int
 }
 
 func (e *SellRejection) Error() string { return e.Reason }
 
-// PricedSellLine records how one line was checked, for the sell log.
-type PricedSellLine struct {
-	// ServerPrice and Tolerance are nil for a staff sell, whose typed price is
-	// deliberately not compared against the market.
-	ServerPrice *float64
-	Tolerance   *float64
-	// What the browser computed, kept so a log can show when it disagreed with
-	// the server's own arithmetic.
-	ClientPerGram float64
-	ClientTotal   float64
+func reject(reason string) error { return &SellRejection{Reason: reason} }
+
+// SellQuoteRequest is what the customer's screen chose: a product and how much
+// of it. Deliberately no price — that is the server's to decide.
+type SellQuoteRequest struct {
+	TypeID  string  `json:"type_id"`
+	Metal   string  `json:"metal"`
+	Weight  float64 `json:"weight"`
+	Percent float64 `json:"percent"`
 }
 
-// SellPricing is a payload after the server has checked and re-priced it.
-type SellPricing struct {
-	Items []billUC.CreateBillItemRequest
-	Lines []PricedSellLine
-	// RealtimeBuy/RealtimeSell are set when a live tick priced a gold line, so
-	// the bill's price round can be stamped from that very reading.
+// SellQuote is a priced line the server stands behind.
+type SellQuote struct {
+	GoldTypeID uint
+	TypeID     string
+	TypeName   string
+	Metal      string
+	Weight     float64
+	Percent    float64
+	// Price is per บาททอง for gold and per kilogram for silver (the base price
+	// the screen shows; a weight-tier surcharge is folded into the amounts).
+	Price     float64
+	PerGram   float64
+	Total     float64
+	PriceMode string
+	// RealtimeBuy/RealtimeSell are set when a live tick priced the line.
 	RealtimeBuy  float64
 	RealtimeSell float64
 }
 
-// SellPriceTolerance returns the configured band for a metal and price mode,
-// clamped on read like the realtime pricing policy: a value written straight
-// into the table never went past the API's validation.
-func SellPriceTolerance(db *gorm.DB, metal, priceMode string) float64 {
-	switch {
-	case metal == "silver":
-		return clamp(configFloat(db, KeySellToleranceSilver, defaultSellToleranceSilver),
-			SellToleranceSilverMin, SellToleranceSilverMax)
-	case priceMode == PriceModeRealtime:
-		return clamp(configFloat(db, KeySellToleranceRealtime, defaultSellToleranceRealtime),
-			SellToleranceGoldMin, SellToleranceGoldMax)
-	default:
-		return clamp(configFloat(db, KeySellToleranceAssociation, defaultSellToleranceAssociation),
-			SellToleranceGoldMin, SellToleranceGoldMax)
+// QuoteSell prices one customer sale from the shop's own feed: the type must be
+// the one the sell screen offers, the weight must follow the screen's rules, and
+// the price comes from the server, never from the request.
+func QuoteSell(db *gorm.DB, req SellQuoteRequest) (*SellQuote, error) {
+	metal := req.Metal
+	if metal == "" {
+		metal = "gold"
 	}
+	if !finite(req.Weight, req.Percent) {
+		return nil, reject("ข้อมูลรายการขายไม่ถูกต้อง")
+	}
+
+	gt, err := sellTypeFor(db, metal)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(req.TypeID) != "" && strings.TrimSpace(req.TypeID) != strconv.FormatUint(uint64(gt.ID), 10) {
+		return nil, reject("ประเภทสินค้าไม่ถูกต้อง กรุณารีเฟรชหน้าแล้วลองใหม่")
+	}
+
+	quote := &SellQuote{
+		GoldTypeID: gt.ID,
+		TypeID:     strconv.FormatUint(uint64(gt.ID), 10),
+		TypeName:   gt.Name,
+		Metal:      metal,
+		Weight:     req.Weight,
+	}
+
+	if metal == "gold" {
+		// Customers use the ±5 stepper unless the custom-weight schedule is open.
+		if reason := checkGoldWeight(req.Weight, !GetCustomWeightStatus(db).Allowed); reason != "" {
+			return nil, reject(reason)
+		}
+		mode := GetSalesStatus(db).PriceMode
+		gq, reason := currentGoldQuote(db, mode)
+		if reason != "" {
+			return nil, reject(reason)
+		}
+		quote.PriceMode = mode
+		quote.Price = gq.forSource(gt.PriceSource)
+		if quote.Price <= 0 {
+			return nil, reject("ยังไม่มีข้อมูลราคาทอง กรุณาติดต่อเจ้าหน้าที่")
+		}
+		quote.RealtimeBuy, quote.RealtimeSell = gq.realtimeBuy, gq.realtimeSell
+		quote.PerGram, quote.Total = goldLineAmounts(gt, quote.Price, req.Weight)
+		return quote, nil
+	}
+
+	if metal != "silver" {
+		return nil, reject("ไม่รองรับการขายโลหะชนิดนี้")
+	}
+	if reason := checkSilverWeight(req.Weight); reason != "" {
+		return nil, reject(reason)
+	}
+	status := GetSilverSellStatus(db)
+	tier := ResolveSilverTier(status.Tiers, req.Weight/1000)
+	if tier == nil || tier.Blocked {
+		return nil, reject("น้ำหนักนี้ร้านไม่รับซื้อ กรุณาลดน้ำหนักหรือติดต่อเจ้าหน้าที่")
+	}
+	// A customer may declare a lower purity for scrap but never more than the
+	// type's own figure (99.9 for เงินแท่ง).
+	maxPercent := 100.0
+	if gt.DefaultPercent > 0 {
+		maxPercent = gt.DefaultPercent
+	}
+	percent := req.Percent
+	if percent == 0 {
+		percent = gt.DefaultPercent
+	}
+	if reason := checkSilverPercent(percent, maxPercent); reason != "" {
+		return nil, reject(reason)
+	}
+	base, reason := currentSilverBase(db, &status, gt)
+	if reason != "" {
+		return nil, reject(reason)
+	}
+	quote.Percent = percent
+	quote.Price = base
+	quote.PriceMode = PriceModeAssociation
+	quote.PerGram, quote.Total = silverLineAmounts(gt, base, tier.AddPerKg, percent, req.Weight)
+	return quote, nil
 }
 
-// PriceSellItems checks a sell payload and recomputes every amount the server
-// can derive, so nothing that lands in a bill rests on arithmetic the browser
-// did. The input slice is left untouched — callers log it as submitted.
-//
-// customer=true is the self-service flow: the type must be the one the sell
-// screen offers, the weight must follow the screen's rules, and the price must
-// sit within the configured band of the server's own price. A staff sell keeps
-// its typed price (the screen lets staff override it) but still has its type,
-// weight and totals checked.
-func PriceSellItems(db *gorm.DB, items []billUC.CreateBillItemRequest, customer bool, priceMode string) (*SellPricing, error) {
-	p := &sellPricer{db: db, customer: customer, priceMode: priceMode}
-	out := &SellPricing{
-		Items: make([]billUC.CreateBillItemRequest, len(items)),
-		Lines: make([]PricedSellLine, len(items)),
-	}
+// PriceStaffItems checks a staff sale and recomputes every amount. Staff keep
+// the price they typed — the sell screen lets them override it — but the type,
+// the weight and the arithmetic are the server's.
+func PriceStaffItems(db *gorm.DB, items []billUC.CreateBillItemRequest) ([]billUC.CreateBillItemRequest, error) {
+	out := make([]billUC.CreateBillItemRequest, len(items))
+	var silverStatus *SilverSellStatus
 	for i, item := range items {
-		line := PricedSellLine{ClientPerGram: item.PerGram, ClientTotal: item.Total}
-		priced, err := p.price(i, item, &line)
+		fail := func(reason string) error { return &SellRejection{Reason: reason, Item: i} }
+		if !finite(item.Price, item.Weight, item.Percent, item.Plus) {
+			return nil, fail("ข้อมูลรายการขายไม่ถูกต้อง")
+		}
+		metal := item.Metal
+		if metal == "" {
+			metal = "gold"
+		}
+		gt, err := sellTypeFor(db, metal)
 		if err != nil {
 			return nil, err
 		}
-		out.Items[i] = priced
-		out.Lines[i] = line
-	}
-	if p.gold != nil && p.gold.realtime {
-		out.RealtimeBuy, out.RealtimeSell = p.gold.barBuy, p.gold.barSell
+		if strings.TrimSpace(item.TypeID) != strconv.FormatUint(uint64(gt.ID), 10) {
+			return nil, fail("ประเภทสินค้าไม่ถูกต้อง กรุณารีเฟรชหน้าแล้วลองใหม่")
+		}
+		if item.Price <= 0 {
+			return nil, fail("ราคารับซื้อต้องมากกว่า 0")
+		}
+
+		item.TypeName = gt.Name
+		item.Metal = metal
+		item.Plus = 0
+		switch metal {
+		case "gold":
+			// Staff type the weight rather than stepping it.
+			if reason := checkGoldWeight(item.Weight, false); reason != "" {
+				return nil, fail(reason)
+			}
+			item.Percent = 0
+			item.PerGram, item.Total = goldLineAmounts(gt, item.Price, item.Weight)
+		case "silver":
+			if reason := checkSilverWeight(item.Weight); reason != "" {
+				return nil, fail(reason)
+			}
+			if silverStatus == nil {
+				st := GetSilverSellStatus(db)
+				silverStatus = &st
+			}
+			tier := ResolveSilverTier(silverStatus.Tiers, item.Weight/1000)
+			if tier == nil || tier.Blocked {
+				return nil, fail("น้ำหนักนี้ร้านไม่รับซื้อ กรุณาลดน้ำหนักหรือติดต่อเจ้าหน้าที่")
+			}
+			if reason := checkSilverPercent(item.Percent, 100); reason != "" {
+				return nil, fail(reason)
+			}
+			item.PerGram, item.Total = silverLineAmounts(gt, item.Price, tier.AddPerKg, item.Percent, item.Weight)
+		default:
+			return nil, fail("ไม่รองรับการขายโลหะชนิดนี้")
+		}
+		out[i] = item
 	}
 	return out, nil
 }
 
-// sellPricer caches the lookups one payload needs, so a multi-line sell reads
-// the price and the schedules once.
-type sellPricer struct {
-	db        *gorm.DB
-	customer  bool
-	priceMode string
-
-	gold         *goldQuote
-	silverStatus *SilverSellStatus
-	customWeight *CustomWeightStatus
-}
-
-func (p *sellPricer) price(i int, item billUC.CreateBillItemRequest, line *PricedSellLine) (billUC.CreateBillItemRequest, error) {
-	reject := func(reason string) (billUC.CreateBillItemRequest, error) {
-		return item, &SellRejection{Reason: reason, Item: i, ClientPrice: item.Price}
-	}
-	if !finite(item.Price, item.Weight, item.Percent, item.Plus) {
-		return reject("ข้อมูลรายการขายไม่ถูกต้อง")
-	}
-
-	metal := item.Metal
-	if metal == "" {
-		metal = "gold"
-	}
-	var gt *entity.GoldType
+// sellTypeFor resolves the type the sell screen offers for a metal: the first
+// one, in the order /gold-types lists them, that the screen would pick.
+func sellTypeFor(db *gorm.DB, metal string) (*entity.GoldType, error) {
+	var gt entity.GoldType
 	var err error
 	switch metal {
 	case "gold":
-		gt, err = sellGoldType(p.db)
+		err = db.Where("metal = ? AND name LIKE ? AND name LIKE ?", "gold", "%แท่ง%", "%96.5%").
+			Order("sort_order ASC, id ASC").First(&gt).Error
 	case "silver":
-		gt, err = sellSilverType(p.db)
+		err = db.Where("metal = ?", "silver").Order("sort_order ASC, id ASC").First(&gt).Error
 	default:
-		return reject("ไม่รองรับการขายโลหะชนิดนี้")
+		return nil, reject("ไม่รองรับการขายโลหะชนิดนี้")
 	}
 	if err != nil {
-		return reject("ไม่พบประเภทสินค้าที่เปิดขาย กรุณาติดต่อเจ้าหน้าที่")
+		return nil, reject("ไม่พบประเภทสินค้าที่เปิดขาย กรุณาติดต่อเจ้าหน้าที่")
 	}
-	// The screen only offers these two types. Any other id is a hand-built
-	// request — and for silver, a different type would bring its own formula.
-	if strings.TrimSpace(item.TypeID) != strconv.FormatUint(uint64(gt.ID), 10) {
-		return reject("ประเภทสินค้าไม่ถูกต้อง กรุณารีเฟรชหน้าแล้วลองใหม่")
-	}
-
-	if metal == "gold" {
-		return p.priceGold(i, item, gt, line)
-	}
-	return p.priceSilver(i, item, gt, line)
-}
-
-func (p *sellPricer) priceGold(i int, item billUC.CreateBillItemRequest, gt *entity.GoldType, line *PricedSellLine) (billUC.CreateBillItemRequest, error) {
-	reject := func(reason string) (billUC.CreateBillItemRequest, error) {
-		return item, &SellRejection{Reason: reason, Item: i, ClientPrice: item.Price}
-	}
-
-	// Customers use the ±5 stepper unless the custom-weight schedule is open;
-	// staff always type the weight.
-	stepped := false
-	if p.customer {
-		if p.customWeight == nil {
-			st := GetCustomWeightStatus(p.db)
-			p.customWeight = &st
-		}
-		stepped = !p.customWeight.Allowed
-	}
-	if reason := checkGoldWeight(item.Weight, stepped); reason != "" {
-		return reject(reason)
-	}
-
-	if p.customer {
-		if p.gold == nil {
-			q, reason := currentGoldQuote(p.db, p.priceMode)
-			if reason != "" {
-				return reject(reason)
-			}
-			p.gold = q
-		}
-		server := p.gold.forSource(gt.PriceSource)
-		tol := SellPriceTolerance(p.db, "gold", p.priceMode)
-		if !priceWithinTolerance(item.Price, server, tol) {
-			return item, &SellRejection{
-				Reason:      fmt.Sprintf("ราคาเปลี่ยนแล้ว (ราคาปัจจุบัน %s บาท) กรุณากดขายใหม่", formatThaiAmount(server)),
-				Item:        i,
-				ServerPrice: server,
-				ClientPrice: item.Price,
-				Tolerance:   tol,
-			}
-		}
-		line.ServerPrice, line.Tolerance = &server, &tol
-	} else if item.Price <= 0 {
-		return reject("ราคารับซื้อต้องมากกว่า 0")
-	}
-
-	perGram, total := goldLineAmounts(gt, item.Price, item.Weight)
-	item.TypeName = gt.Name
-	item.Metal = "gold"
-	item.Percent = 0
-	item.Plus = 0
-	item.PerGram = perGram
-	item.Total = total
-	return item, nil
-}
-
-func (p *sellPricer) priceSilver(i int, item billUC.CreateBillItemRequest, gt *entity.GoldType, line *PricedSellLine) (billUC.CreateBillItemRequest, error) {
-	reject := func(reason string) (billUC.CreateBillItemRequest, error) {
-		return item, &SellRejection{Reason: reason, Item: i, ClientPrice: item.Price}
-	}
-
-	if reason := checkSilverWeight(item.Weight); reason != "" {
-		return reject(reason)
-	}
-	if p.silverStatus == nil {
-		st := GetSilverSellStatus(p.db)
-		p.silverStatus = &st
-	}
-	tier := ResolveSilverTier(p.silverStatus.Tiers, item.Weight/1000)
-	if tier == nil || tier.Blocked {
-		return reject("น้ำหนักนี้ร้านไม่รับซื้อ กรุณาลดน้ำหนักหรือติดต่อเจ้าหน้าที่")
-	}
-
-	// A customer may lower the purity for scrap but never declare more than the
-	// type's own figure (99.9 for เงินแท่ง). Staff can enter what they measured.
-	maxPercent := 100.0
-	if p.customer && gt.DefaultPercent > 0 {
-		maxPercent = gt.DefaultPercent
-	}
-	if reason := checkSilverPercent(item.Percent, maxPercent); reason != "" {
-		return reject(reason)
-	}
-
-	if p.customer {
-		server, reason := currentSilverBase(p.db, p.silverStatus, gt)
-		if reason != "" {
-			return reject(reason)
-		}
-		tol := SellPriceTolerance(p.db, "silver", p.priceMode)
-		if !priceWithinTolerance(item.Price, server, tol) {
-			return item, &SellRejection{
-				Reason:      fmt.Sprintf("ราคาเปลี่ยนแล้ว (ราคาปัจจุบัน %s บาท/กก.) กรุณากดขายใหม่", formatThaiAmount(server)),
-				Item:        i,
-				ServerPrice: server,
-				ClientPrice: item.Price,
-				Tolerance:   tol,
-			}
-		}
-		line.ServerPrice, line.Tolerance = &server, &tol
-	} else if item.Price <= 0 {
-		return reject("ราคารับซื้อต้องมากกว่า 0")
-	}
-
-	// item.Price stays the base price the screen shows; the weight-tier
-	// surcharge is folded into the amounts only (billCalculate.tsx handleAdd).
-	perGram, total := silverLineAmounts(gt, item.Price, tier.AddPerKg, item.Percent, item.Weight)
-	item.TypeName = gt.Name
-	item.Metal = "silver"
-	item.Plus = 0
-	item.PerGram = perGram
-	item.Total = total
-	return item, nil
-}
-
-// sellGoldType finds the type the sell screen offers for gold: the first type,
-// in the order /gold-types lists them, named as a 96.5% bar.
-func sellGoldType(db *gorm.DB) (*entity.GoldType, error) {
-	var gt entity.GoldType
-	err := db.Where("metal = ? AND name LIKE ? AND name LIKE ?", "gold", "%แท่ง%", "%96.5%").
-		Order("sort_order ASC, id ASC").First(&gt).Error
-	return &gt, err
-}
-
-// sellSilverType finds the first silver type, as the sell screen does.
-func sellSilverType(db *gorm.DB) (*entity.GoldType, error) {
-	var gt entity.GoldType
-	err := db.Where("metal = ?", "silver").Order("sort_order ASC, id ASC").First(&gt).Error
-	return &gt, err
+	return &gt, nil
 }
 
 // goldQuote is one reading of the gold price in the shape the sell screen
@@ -322,7 +232,9 @@ func sellSilverType(db *gorm.DB) (*entity.GoldType, error) {
 type goldQuote struct {
 	barBuy, barSell           float64
 	ornamentBuy, ornamentSell float64
-	realtime                  bool
+	// realtimeBuy/realtimeSell are non-zero only for a live reading, which the
+	// document's price round is stamped from.
+	realtimeBuy, realtimeSell float64
 }
 
 // forSource mirrors the screen's sourceMap, which falls back to bar_buy.
@@ -339,8 +251,11 @@ func (q goldQuote) forSource(source string) float64 {
 }
 
 // currentGoldQuote reads the price the customer's screen shows in this price
-// mode. Returns a customer-facing reason when there is none to compare with.
+// mode. Returns a customer-facing reason when there is none.
 func currentGoldQuote(db *gorm.DB, priceMode string) (*goldQuote, string) {
+	if priceMode == PriceModeClosed {
+		return nil, "ขณะนี้ปิดทำการ (ทอง) ไม่สามารถขายได้"
+	}
 	if priceMode == PriceModeRealtime {
 		tick, err := FetchRealtimeTick()
 		if err != nil {
@@ -351,7 +266,10 @@ func currentGoldQuote(db *gorm.DB, priceMode string) (*goldQuote, string) {
 			return nil, "เชื่อมต่อราคาเรียลไทม์ไม่ได้ กรุณาลองใหม่อีกครั้ง"
 		}
 		// The screen shows the bar figures for ornaments too while realtime.
-		return &goldQuote{barBuy: buy, barSell: sell, ornamentBuy: buy, ornamentSell: sell, realtime: true}, ""
+		return &goldQuote{
+			barBuy: buy, barSell: sell, ornamentBuy: buy, ornamentSell: sell,
+			realtimeBuy: buy, realtimeSell: sell,
+		}, ""
 	}
 	// /gold-prices/latest: a manual price inside its window, else the latest auto.
 	gp, err := goldPriceRepo.NewGoldPriceRepository(db).GetLatest()
@@ -445,10 +363,6 @@ func checkSilverPercent(percent, max float64) string {
 		return fmt.Sprintf("เปอร์เซ็นต์ความบริสุทธิ์ต้องมากกว่า 0 และไม่เกิน %s%%", strconv.FormatFloat(max, 'f', -1, 64))
 	}
 	return ""
-}
-
-func priceWithinTolerance(client, server, tolerance float64) bool {
-	return math.Abs(client-server) <= tolerance+priceEpsilon
 }
 
 // goldLineAmounts prices a gold line the way the sell screen and the auto-sell

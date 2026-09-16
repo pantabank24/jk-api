@@ -64,30 +64,6 @@ func TestCheckSilverWeightAndPercent(t *testing.T) {
 	}
 }
 
-func TestPriceWithinTolerance(t *testing.T) {
-	cases := []struct {
-		client, server, tol float64
-		ok                  bool
-	}{
-		{68278, 68278, 0, true},
-		{68278.000001, 68278, 0, true}, // JSON float noise
-		{68279, 68278, 0, false},
-		{68308, 68278, 30, true},
-		{68248, 68278, 30, true},
-		{68309, 68278, 30, false},
-		{68247, 68278, 30, false},
-		// BILL1740's three curl lines against a 30-baht band.
-		{70000, 68321, 30, false},
-		{70000, 68306, 30, false},
-		{100000, 68312, 30, false},
-	}
-	for _, c := range cases {
-		if got := priceWithinTolerance(c.client, c.server, c.tol); got != c.ok {
-			t.Errorf("priceWithinTolerance(%v, %v, %v)=%v, want %v", c.client, c.server, c.tol, got, c.ok)
-		}
-	}
-}
-
 func TestResolveSilverTier(t *testing.T) {
 	// The prod configuration, deliberately out of order.
 	tiers := []SilverTier{

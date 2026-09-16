@@ -3,7 +3,6 @@ package controller
 import (
 	"errors"
 	"fmt"
-	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -93,22 +92,97 @@ func queryCreatedBy(c *fiber.Ctx) *uint {
 	return nil
 }
 
+// CreatePriceLock prices a sale from the shop's own feed and holds that figure
+// for a few seconds, so the customer confirms a number the server chose and the
+// browser never sends a price at all. This is the only way a customer sale gets
+// priced — POST /bills takes the lock id, not an amount.
+func (ctrl *BillController) CreatePriceLock(c *fiber.Ctx) error {
+	if middleware.GetRoleName(c) != "customer" {
+		return response.BadRequest(c, "การขายแทนลูกค้าไม่ต้องล็อกราคา")
+	}
+	var req service.SellQuoteRequest
+	if err := c.BodyParser(&req); err != nil {
+		return response.BadRequest(c, "Invalid request body")
+	}
+	if reason := ctrl.sellClosedReason(req.Metal); reason != "" {
+		ctrl.logRejectedLock(c, &req, reason)
+		return response.BadRequest(c, reason)
+	}
+
+	lock, err := service.NewPriceLock(ctrl.db, middleware.GetUserID(c), req)
+	if err != nil {
+		ctrl.logRejectedLock(c, &req, err.Error())
+		return response.BadRequest(c, err.Error())
+	}
+
+	middleware.SetActivityDescription(c, fmt.Sprintf(
+		"ลูกค้ากดส่งขาย %s — ระบบล็อกราคา %s บาท น้ำหนัก %s รวม %s บาท (%d วินาที)",
+		lock.TypeName, formatTH(lock.Price), formatWeight(lock.Weight), formatTH(lock.Total), lock.SecondsLeft(),
+	))
+	middleware.SetActivityTarget(c, middleware.GetUserID(c))
+	middleware.SetActivityDetail(c, sellLogDetail{
+		Kind:        "price_lock",
+		Metal:       lock.Metal,
+		PriceMode:   lock.PriceMode,
+		LockID:      lock.ID,
+		LockedAt:    lock.CreatedAt,
+		TotalWeight: lock.Weight,
+		TotalAmount: lock.Total,
+		Items:       []sellLogItem{lockLogItem(lock)},
+	})
+
+	return response.Success(c, "ล็อกราคาแล้ว", fiber.Map{
+		"lock_id":    lock.ID,
+		"type_id":    lock.TypeID,
+		"type_name":  lock.TypeName,
+		"metal":      lock.Metal,
+		"weight":     lock.Weight,
+		"percent":    lock.Percent,
+		"price":      lock.Price,
+		"per_gram":   lock.PerGram,
+		"total":      lock.Total,
+		"price_mode": lock.PriceMode,
+		"expires_at": lock.ExpiresAt,
+		"expires_in": lock.SecondsLeft(),
+	})
+}
+
+// sellClosedReason reports why a customer may not sell this metal right now, or
+// "" when they may. Gold follows bills_open + the sales schedule; silver has its
+// own schedule, so a customer can sell one after hours and not the other.
+func (ctrl *BillController) sellClosedReason(metal string) string {
+	if metal == "silver" {
+		if !service.GetSilverSellStatus(ctrl.db).IsOpen {
+			return "ขณะนี้ปิดรับซื้อเงิน ไม่สามารถสร้างบิลได้"
+		}
+		return ""
+	}
+	var billsOpenCfg entity.SystemConfig
+	if err := ctrl.db.Where("key = ?", "bills_open").First(&billsOpenCfg).Error; err == nil {
+		if billsOpenCfg.Value == "false" {
+			return "ขณะนี้ปิดรับซื้อทอง ไม่สามารถสร้างบิลได้"
+		}
+	}
+	if !service.GetSalesStatus(ctrl.db).IsOpen {
+		return "ขณะนี้ปิดทำการ (ทอง) ไม่สามารถสร้างบิลได้"
+	}
+	return ""
+}
+
 func (ctrl *BillController) CreateBill(c *fiber.Ctx) error {
 	var req usecase.CreateBillRequest
 	if err := c.BodyParser(&req); err != nil {
 		return response.BadRequest(c, "Invalid request body")
 	}
-	if len(req.Items) == 0 {
-		return response.BadRequest(c, "ต้องมีรายการอย่างน้อย 1 รายการ")
-	}
 
 	// Two flows share this endpoint:
-	//   - customer self-service: gated by the customer-facing switches (bills_open
-	//     + store hours); the bill is created for the caller.
+	//   - customer self-service: confirms a price the server locked when they
+	//     pressed ส่งขาย; the payload carries the lock id and nothing priced.
 	//   - staff on-behalf (master/owner/employee with bills.sell): pick a customer
-	//     and sell for them, bypassing the customer-facing switches entirely.
+	//     and sell for them at a price they type, bypassing the customer switches.
 	staffSelling := middleware.GetRoleName(c) != "customer"
 	var sellCustomer *entity.User
+	var lock *service.PriceLock
 
 	status := service.GetSalesStatus(ctrl.db)
 
@@ -121,60 +195,41 @@ func (ctrl *BillController) CreateBill(c *fiber.Ctx) error {
 			return response.BadRequest(c, err.Error())
 		}
 		sellCustomer = cust
+		if len(req.Items) == 0 {
+			return response.BadRequest(c, "ต้องมีรายการอย่างน้อย 1 รายการ")
+		}
+		// Staff type their own price, so only the type, the weight and the
+		// arithmetic are re-derived here.
+		items, err := service.PriceStaffItems(ctrl.db, req.Items)
+		if err != nil {
+			ctrl.logRejectedSell(c, &req, sellCustomer, status, err)
+			return response.BadRequest(c, err.Error())
+		}
+		req.Items = items
 	} else {
-		// Gold and silver open independently, so validate each metal against its
-		// own schedule (a customer may sell silver after gold hours, and vice versa).
-		hasGold, hasSilver := false, false
-		for _, it := range req.Items {
-			if it.Metal == "" || it.Metal == "gold" {
-				hasGold = true
-			} else {
-				hasSilver = true
-			}
+		var err error
+		lock, err = service.ConsumePriceLock(strings.TrimSpace(req.LockID), middleware.GetUserID(c))
+		if err != nil {
+			ctrl.logRejectedSell(c, &req, nil, status, err)
+			return response.BadRequest(c, err.Error())
 		}
-
-		if hasGold {
-			// Block gold when bills_open is false or the store is closed.
-			var billsOpenCfg entity.SystemConfig
-			if err := ctrl.db.Where("key = ?", "bills_open").First(&billsOpenCfg).Error; err == nil {
-				if billsOpenCfg.Value == "false" {
-					return response.BadRequest(c, "ขณะนี้ปิดรับซื้อทอง ไม่สามารถสร้างบิลได้")
-				}
-			}
-			if !status.IsOpen {
-				return response.BadRequest(c, "ขณะนี้ปิดทำการ (ทอง) ไม่สามารถสร้างบิลได้")
-			}
+		// The shop may have closed in the seconds since the price was locked.
+		if reason := ctrl.sellClosedReason(lock.Metal); reason != "" {
+			ctrl.logRejectedSell(c, &req, nil, status, errors.New(reason))
+			return response.BadRequest(c, reason)
 		}
-		if hasSilver {
-			// Silver follows its own schedule (enable + close-shop + daily cutoff).
-			if !service.GetSilverSellStatus(ctrl.db).IsOpen {
-				return response.BadRequest(c, "ขณะนี้ปิดรับซื้อเงิน ไม่สามารถสร้างบิลได้")
-			}
-		}
+		// Whatever the payload said, the bill is the locked line.
+		req.Items = []usecase.CreateBillItemRequest{lock.Item()}
 	}
 
-	// Every amount in the bill is derived here rather than taken from the
-	// payload: BILL1740 was built by curl-posting a price of 100,000 that no
-	// screen ever showed.
-	pricing, err := service.PriceSellItems(ctrl.db, req.Items, !staffSelling, status.PriceMode)
-	if err != nil {
-		ctrl.logRejectedSell(c, &req, sellCustomer, status, err)
-		return response.BadRequest(c, err.Error())
-	}
-	req.Items = pricing.Items
-
-	// Stamp the gold-price round for the document. Real-time only applies during
-	// the real-time window; otherwise (incl. staff selling after hours) the latest
-	// association round is used.
-	if status.PriceMode == service.PriceModeRealtime {
-		// Lock a snapshot of the real-time price for this document — the very
-		// reading the customer's price was checked against, when there was one.
-		if pricing.RealtimeBuy > 0 {
-			req.GoldRound, req.GoldPriceID = service.SaveRealtimeRound(ctrl.db, pricing.RealtimeBuy, pricing.RealtimeSell)
-		} else {
-			req.GoldRound, req.GoldPriceID = service.SnapshotRealtimeRound(ctrl.db)
-		}
-	} else {
+	// Stamp the gold-price round for the document: for a locked sale it is the
+	// very reading the customer was quoted from, so the bill and the round agree.
+	switch {
+	case lock != nil && lock.RealtimeBuy > 0:
+		req.GoldRound, req.GoldPriceID = service.SaveRealtimeRound(ctrl.db, lock.RealtimeBuy, lock.RealtimeSell)
+	case lock == nil && status.PriceMode == service.PriceModeRealtime:
+		req.GoldRound, req.GoldPriceID = service.SnapshotRealtimeRound(ctrl.db)
+	default:
 		// Stamp the association gold-price round in effect now (for reporting).
 		req.GoldRound, req.GoldPriceID = service.CurrentRound(ctrl.db)
 	}
@@ -201,7 +256,7 @@ func (ctrl *BillController) CreateBill(c *fiber.Ctx) error {
 	if err != nil {
 		return response.BadRequest(c, err.Error())
 	}
-	ctrl.logSell(c, &req, pricing, bill, sellCustomer, status)
+	ctrl.logSell(c, &req, lock, bill, sellCustomer, status)
 	// The sell just grew the shop's รอออกบิล pile — check it against the
 	// threshold. Driven off the REQUEST's metals, not the returned bill: a payload
 	// covering both metals is split into one bill per metal and only the first
@@ -221,15 +276,19 @@ type sellLogItem struct {
 	Weight   float64 `json:"weight"`
 	PerGram  float64 `json:"per_gram"`
 	Total    float64 `json:"total"`
-	// The price the server held at that moment and how far the customer's price
-	// sat from it. Absent on staff sells, whose typed price is not compared.
-	ServerPrice *float64 `json:"server_price,omitempty"`
-	PriceDiff   *float64 `json:"price_diff,omitempty"`
-	Tolerance   *float64 `json:"tolerance,omitempty"`
-	// What the browser sent, recorded only when the server's arithmetic came out
-	// different — a browser never does that, so it marks a hand-built request.
-	ClientPerGram *float64 `json:"client_per_gram,omitempty"`
-	ClientTotal   *float64 `json:"client_total,omitempty"`
+}
+
+// lockLogItem renders a locked price as a log line.
+func lockLogItem(lock *service.PriceLock) sellLogItem {
+	return sellLogItem{
+		TypeName: lock.TypeName,
+		Metal:    lock.Metal,
+		Price:    lock.Price,
+		Percent:  lock.Percent,
+		Weight:   lock.Weight,
+		PerGram:  lock.PerGram,
+		Total:    lock.Total,
+	}
 }
 
 // sellLogDetail is the evidence snapshot for one sell click. It is deliberately
@@ -248,8 +307,13 @@ type sellLogDetail struct {
 	TotalWeight float64       `json:"total_weight"`
 	TotalAmount float64       `json:"total_amount"`
 	Items       []sellLogItem `json:"items"`
-	// Reason is why a sell was refused (kind "sell_rejected" only).
+	// Reason is why a sell was refused (kinds "sell_rejected" / "lock_rejected").
 	Reason string `json:"reason,omitempty"`
+	// The price lock a customer sale was priced from: which lock, when the shop
+	// committed to the price, and how long the customer took to confirm it.
+	LockID       string    `json:"lock_id,omitempty"`
+	LockedAt     time.Time `json:"locked_at,omitempty"`
+	ConfirmAfter float64   `json:"confirm_after_sec,omitempty"`
 }
 
 // logSell records the sell click in the activity log with the full price/weight
@@ -258,7 +322,7 @@ type sellLogDetail struct {
 func (ctrl *BillController) logSell(
 	c *fiber.Ctx,
 	req *usecase.CreateBillRequest,
-	pricing *service.SellPricing,
+	lock *service.PriceLock,
 	bill *entity.Quotation,
 	sellCustomer *entity.User,
 	status service.SalesStatus,
@@ -273,10 +337,18 @@ func (ctrl *BillController) logSell(
 		OnBehalf:  sellCustomer != nil,
 		Items:     make([]sellLogItem, 0, len(req.Items)),
 	}
+	if lock != nil {
+		// The price was the shop's own, so what matters afterwards is which lock
+		// it came from and how long the customer sat on it before confirming.
+		detail.PriceMode = lock.PriceMode
+		detail.LockID = lock.ID
+		detail.LockedAt = lock.CreatedAt
+		detail.ConfirmAfter = time.Since(lock.CreatedAt).Seconds()
+	}
 	// Price is quoted per item, so a multi-item click has no single price; the
 	// per-item lines carry it and the header keeps only the summable figures.
-	for i, it := range req.Items {
-		line := sellLogItem{
+	for _, it := range req.Items {
+		detail.Items = append(detail.Items, sellLogItem{
 			TypeName: it.TypeName,
 			Metal:    it.Metal,
 			Price:    it.Price,
@@ -285,19 +357,7 @@ func (ctrl *BillController) logSell(
 			Weight:   it.Weight,
 			PerGram:  it.PerGram,
 			Total:    it.Total,
-		}
-		if i < len(pricing.Lines) {
-			priced := pricing.Lines[i]
-			if priced.ServerPrice != nil {
-				diff := it.Price - *priced.ServerPrice
-				line.ServerPrice, line.PriceDiff, line.Tolerance = priced.ServerPrice, &diff, priced.Tolerance
-			}
-			if math.Abs(priced.ClientTotal-it.Total) > 0.01 || math.Abs(priced.ClientPerGram-it.PerGram) > 0.01 {
-				clientPerGram, clientTotal := priced.ClientPerGram, priced.ClientTotal
-				line.ClientPerGram, line.ClientTotal = &clientPerGram, &clientTotal
-			}
-		}
-		detail.Items = append(detail.Items, line)
+		})
 		detail.TotalWeight += it.Weight
 		detail.TotalAmount += it.Total
 	}
@@ -344,8 +404,6 @@ func (ctrl *BillController) logRejectedSell(
 		Reason:    cause.Error(),
 		Items:     make([]sellLogItem, 0, len(req.Items)),
 	}
-	var rejection *service.SellRejection
-	errors.As(cause, &rejection)
 	for i, it := range req.Items {
 		metal := it.Metal
 		if metal == "" {
@@ -360,11 +418,6 @@ func (ctrl *BillController) logRejectedSell(
 			Weight:   it.Weight,
 			PerGram:  it.PerGram,
 			Total:    it.Total,
-		}
-		if rejection != nil && rejection.Item == i && rejection.ServerPrice > 0 {
-			server, tol := rejection.ServerPrice, rejection.Tolerance
-			diff := it.Price - server
-			line.ServerPrice, line.PriceDiff, line.Tolerance = &server, &diff, &tol
 		}
 		if i == 0 {
 			detail.Metal = metal
@@ -387,6 +440,35 @@ func (ctrl *BillController) logRejectedSell(
 	} else {
 		middleware.SetActivityTarget(c, middleware.GetUserID(c))
 	}
+}
+
+// logRejectedLock records a ส่งขาย press the server would not price — a closed
+// shop, a weight the screen cannot produce, or a feed it could not read.
+func (ctrl *BillController) logRejectedLock(c *fiber.Ctx, req *service.SellQuoteRequest, reason string) {
+	metal := req.Metal
+	if metal == "" {
+		metal = "gold"
+	}
+	middleware.SetActivityDescription(c, fmt.Sprintf(
+		"ระบบไม่ล็อกราคาให้: ลูกค้ากดส่งขาย%s น้ำหนัก %s — %s",
+		metalWord(metal), formatWeight(req.Weight), reason,
+	))
+	middleware.SetActivityTarget(c, middleware.GetUserID(c))
+	middleware.SetActivityDetail(c, sellLogDetail{
+		Kind:        "lock_rejected",
+		Metal:       metal,
+		Reason:      reason,
+		TotalWeight: req.Weight,
+		Items:       []sellLogItem{{Metal: metal, Weight: req.Weight, Percent: req.Percent}},
+	})
+}
+
+// metalWord is the Thai word used in the log lines above.
+func metalWord(metal string) string {
+	if metal == "silver" {
+		return "เงิน"
+	}
+	return "ทอง"
 }
 
 // ownsBill reports whether the caller may see or touch this bill. Only customers

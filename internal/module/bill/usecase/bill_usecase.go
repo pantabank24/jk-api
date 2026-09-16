@@ -49,6 +49,10 @@ type CreateBillRequest struct {
 	// sells on behalf of a customer; the controller validates it and uses it as
 	// the bill's CreatedBy. Ignored for the customer self-service flow.
 	CustomerID uint `json:"customer_id"`
+	// LockID names the price the server locked when the customer pressed ส่งขาย.
+	// It is the only way a customer sale is priced: the items below are ignored
+	// for them, so a hand-built payload has no price to offer.
+	LockID string `json:"lock_id"`
 	// GoldRound/GoldPriceID record the gold-price round at creation (set in the
 	// controller from the latest gold price) for reporting.
 	GoldRound   string `json:"-"`
