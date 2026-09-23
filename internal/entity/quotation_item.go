@@ -22,7 +22,13 @@ type QuotationItem struct {
 	// order it filled. A fill accumulates into the customer's open bill like a
 	// manual sell, so this — not the bill's auto_sell flag — is what says which
 	// lines nobody pressed a button for. Nil on every line entered by hand.
-	SellOrderID *uint          `json:"sell_order_id,omitempty" gorm:"index"`
+	SellOrderID *uint `json:"sell_order_id,omitempty" gorm:"index"`
+	// SplitBillID marks the NEGATIVE line a partial (by-weight) issuance leaves in
+	// the customer's pending bill, and names the bill that took that portion to be
+	// issued. The pending bill keeps every line the customer sold; this line is what
+	// makes its sum the amount still outstanding. It must never be deleted or edited
+	// on its own — that would hand the customer back weight already issued.
+	SplitBillID *uint          `json:"split_bill_id,omitempty" gorm:"index"`
 	CreatedAt   time.Time      `json:"created_at"`
 	UpdatedAt   time.Time      `json:"updated_at"`
 	DeletedAt   gorm.DeletedAt `json:"-" gorm:"index"`

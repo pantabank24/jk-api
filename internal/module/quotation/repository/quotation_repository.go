@@ -9,6 +9,7 @@ import (
 	"jk-api/internal/entity"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type QuotationRepository interface {
@@ -31,6 +32,11 @@ type QuotationRepository interface {
 	// SplitBillItems moves the given items into a new same-prefix bill and
 	// recomputes both totals. Used when a quotation covers only part of a bill.
 	SplitBillItems(billID uint, itemIDs []uint) (uint, error)
+	// SplitBillWeight takes `weight` out of the given pending bills into a new
+	// bill (left at รอออกบิล for the caller to mark issued), leaving a deduction
+	// line in each source bill. whole=true means the weight covers everything
+	// outstanding: nothing is split and the caller issues the bills whole.
+	SplitBillWeight(billIDs []uint, primaryID uint, weight float64) (newBillID uint, whole bool, err error)
 	// FindUnrefundedApprovedByCreator returns this creator's approved quotations
 	// whose charged credit hasn't been refunded yet (used by the credit-reset action).
 	FindUnrefundedApprovedByCreator(userID uint) ([]entity.Quotation, error)
@@ -353,6 +359,176 @@ func (r *quotationRepository) SplitBillItems(billID uint, itemIDs []uint) (uint,
 		return nil
 	})
 	return newID, err
+}
+
+// SplitBillWeight is the by-weight counterpart of SplitBillItems: the master
+// issues 6 of the 10 baht a customer has outstanding, and the other 4 stay
+// รอออกบิล in the bill they are already in.
+//
+// Nothing the customer sold is moved or rewritten. Each source bill gains one
+// negative line (see planWeightSplit for how the weight is shared), and a new
+// bill receives the matching positive line — that new bill is what gets issued,
+// exactly as the moved half of an item split is. The split is value-neutral on
+// its own: until the new bill is marked issued, the customer's pending bills
+// still add up to what they did before, so a failure after this point never
+// loses or duplicates any weight.
+//
+// The bills are locked and re-read here, so the check that they are still
+// รอออกบิล and that the weight fits is made against the rows actually changed.
+func (r *quotationRepository) SplitBillWeight(billIDs []uint, primaryID uint, weight float64) (uint, bool, error) {
+	if len(billIDs) == 0 {
+		return 0, false, fmt.Errorf("no bills to split")
+	}
+	var newID uint
+	var whole bool
+	err := r.db.Transaction(func(tx *gorm.DB) error {
+		var bills []entity.Quotation
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("id IN ? AND is_bill = ? AND status = ?", billIDs, true, 10).
+			Order("id ASC").Find(&bills).Error; err != nil {
+			return err
+		}
+		if len(bills) != len(uniqueIDs(billIDs)) {
+			return ErrBillNotPending
+		}
+		for i := range bills {
+			if err := tx.Where("quotation_id = ?", bills[i].ID).Order("id ASC").
+				Find(&bills[i].Items).Error; err != nil {
+				return err
+			}
+		}
+
+		sources, metal, err := splitSources(bills)
+		if err != nil {
+			return err
+		}
+		plan, covers, err := planWeightSplit(sources, weight)
+		if err != nil {
+			return err
+		}
+		if covers {
+			whole = true
+			return nil
+		}
+
+		// The new bill copies the header of the bill the master opened (it names
+		// the issued document), falling back to the oldest.
+		primary := &bills[0]
+		for i := range bills {
+			if bills[i].ID == primaryID {
+				primary = &bills[i]
+			}
+		}
+		// Same origin prefix rule as SplitBillItems: P stays P, all else BILL.
+		var code string
+		var codeErr error
+		if strings.HasPrefix(primary.Code, "P") {
+			code, codeErr = documentcode.NextAdmin(tx)
+		} else {
+			code, codeErr = documentcode.NextBill(tx)
+		}
+		if codeErr != nil {
+			return codeErr
+		}
+		newBill := entity.Quotation{
+			StoreID:     primary.StoreID,
+			BranchID:    primary.BranchID,
+			MemberID:    primary.MemberID,
+			CreatedBy:   primary.CreatedBy,
+			Code:        code,
+			Status:      10, // รอออกบิล — caller marks it issued right after
+			IsBill:      true,
+			Metal:       metal,
+			GoldRound:   primary.GoldRound,
+			GoldPriceID: primary.GoldPriceID,
+			TotalAmount: plan.Total,
+		}
+		if err := tx.Create(&newBill).Error; err != nil {
+			return err
+		}
+
+		// Name the lines after what the customer actually sold (ทองคำแท่ง 96.5%),
+		// taken from the first real sale line rather than an earlier deduction.
+		typeID, typeName := "", ""
+		for _, b := range bills {
+			for _, it := range b.Items {
+				if it.SplitBillID == nil && billMetal(it.Metal) == metal {
+					typeID, typeName = it.TypeID, it.TypeName
+					break
+				}
+			}
+			if typeName != "" {
+				break
+			}
+		}
+
+		issued := entity.QuotationItem{
+			QuotationID: newBill.ID,
+			TypeID:      typeID,
+			TypeName:    typeName,
+			Metal:       metal,
+			Price:       plan.Price,
+			Percent:     plan.Percent,
+			Weight:      plan.Weight,
+			PerGram:     plan.PerGram,
+			Total:       plan.Total,
+		}
+		if err := tx.Create(&issued).Error; err != nil {
+			return err
+		}
+
+		// The code of the bill it went to, not the quotation: that bill is what
+		// survives an edit (ดึงกลับไปแก้ไข re-issues the same bill). The product
+		// name rides along because some screens still tell metals apart by name
+		// (customer detail's per-metal totals) — without it the cut would be
+		// uncounted there while the issued half is counted.
+		cutName := "ตัดออกใบ → " + code
+		if typeName != "" {
+			cutName += " · " + typeName
+		}
+		splitID := newBill.ID
+		for _, c := range plan.Cuts {
+			cut := entity.QuotationItem{
+				QuotationID: c.BillID,
+				TypeID:      typeID,
+				TypeName:    cutName,
+				Metal:       metal,
+				Price:       c.Price,
+				Percent:     c.Percent,
+				Weight:      -c.Weight,
+				PerGram:     c.PerGram,
+				Total:       -c.Total,
+				SplitBillID: &splitID,
+			}
+			if err := tx.Create(&cut).Error; err != nil {
+				return err
+			}
+			if err := tx.Model(&entity.Quotation{}).Where("id = ?", c.BillID).
+				Updates(map[string]interface{}{
+					"total_amount": gorm.Expr(
+						"(SELECT COALESCE(SUM(total),0) FROM quotation_items WHERE quotation_id = ? AND deleted_at IS NULL)", c.BillID,
+					),
+					"updated_at": time.Now(),
+				}).Error; err != nil {
+				return err
+			}
+		}
+		newID = newBill.ID
+		return nil
+	})
+	return newID, whole, err
+}
+
+func uniqueIDs(ids []uint) []uint {
+	seen := make(map[uint]bool, len(ids))
+	out := make([]uint, 0, len(ids))
+	for _, id := range ids {
+		if !seen[id] {
+			seen[id] = true
+			out = append(out, id)
+		}
+	}
+	return out
 }
 
 func (r *quotationRepository) FindUnrefundedApprovedByCreator(userID uint) ([]entity.Quotation, error) {

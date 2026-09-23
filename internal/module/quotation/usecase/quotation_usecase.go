@@ -103,6 +103,11 @@ type CreateQuotationRequest struct {
 	// unticked items stay "รอออกบิล" for a later round. Empty = cover everything
 	// (legacy whole-bill behaviour).
 	BillItemIDs []uint `json:"bill_item_ids"`
+	// BillWeight issues only this much of the bills' outstanding weight (baht for
+	// gold, grams for silver); the rest stays รอออกบิล in the same bills. Priced at
+	// their combined average — computed here from the stored lines, never taken
+	// from the client. 0 = issue everything (and BillItemIDs, if any, still apply).
+	BillWeight float64 `json:"bill_weight"`
 	// IntakeID is the ใบเปิดงาน this quotation is being issued from — the counter
 	// step that photographed the goods before they were melted. The intake's
 	// photos are copied onto the quotation and the intake is closed AFTER the
@@ -229,6 +234,42 @@ func (u *quotationUsecase) CreateQuotation(req *CreateQuotationRequest) (*entity
 		}
 	}
 
+	billIDs := req.BillIDs
+	if len(billIDs) == 0 && req.BillID != nil {
+		billIDs = []uint{*req.BillID}
+	}
+
+	// By-weight issuance splits BEFORE anything is created, so a bill that left
+	// รอออกบิล in the meantime (or a weight over what is outstanding) fails the
+	// save outright instead of leaving a quotation with nothing issued under it.
+	// The split is value-neutral until the new bill is marked issued below.
+	var splitBillID uint
+	if req.BillWeight < 0 {
+		return nil, errors.New("น้ำหนักที่ออกใบต้องมากกว่า 0")
+	}
+	if req.BillWeight > 0 && len(billIDs) > 0 {
+		primary := billIDs[0]
+		if req.BillID != nil {
+			primary = *req.BillID
+		}
+		newID, whole, err := u.quotationRepo.SplitBillWeight(billIDs, primary, req.BillWeight)
+		if err != nil {
+			return nil, err
+		}
+		if !whole {
+			splitBillID = newID
+			// The document belongs to the bill it actually issues, not the one it
+			// was cut from. bill_id is what every list, preview and reprint reads
+			// the number (and page-1 delivery logs) from — left on the source
+			// bill, each partial round would print the same number, and a round
+			// would later show whatever the source bill's final round logged.
+			req.BillID = &splitBillID
+			if bills, err := u.quotationRepo.FindBillsByIDs([]uint{newID}); err == nil && len(bills) > 0 {
+				sourceDisplayCode = bills[0].Code
+			}
+		}
+	}
+
 	// Calculate total
 	var totalAmount float64
 	for _, item := range req.Items {
@@ -343,12 +384,23 @@ func (u *quotationUsecase) CreateQuotation(req *CreateQuotationRequest) (*entity
 		})
 	}
 
+	// By weight: only the split-off bill is issued; the source bills keep the
+	// rest (and their deduction lines) at รอออกบิล.
+	if splitBillID != 0 {
+		_ = u.quotationRepo.MarkBillIssued(splitBillID, quotation.ID)
+		if bills, err := u.quotationRepo.FindBillsByIDs([]uint{splitBillID}); err == nil && len(bills) > 0 && bills[0].CreatedBy != nil {
+			_ = u.notifRepo.Create(&entity.Notification{
+				UserID: *bills[0].CreatedBy,
+				Type:   "bill_issued",
+				Title:  "บิลของคุณถูกออกแล้ว",
+				Body:   "ออกบิลแล้ว 1 รายการ สามารถดูรายละเอียดได้",
+			})
+		}
+		return quotation, nil
+	}
+
 	// If issued for customer bill(s), advance each to "รอตรวจบิล", link it to this
 	// quotation, and notify the customer once so they can view the issued bill.
-	billIDs := req.BillIDs
-	if len(billIDs) == 0 && req.BillID != nil {
-		billIDs = []uint{*req.BillID}
-	}
 	if len(billIDs) > 0 {
 		// Per-item issuance: only the ticked bill items (req.BillItemIDs) are
 		// covered by this quotation. Bills fully covered advance whole (exactly

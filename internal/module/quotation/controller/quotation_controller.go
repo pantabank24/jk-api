@@ -226,13 +226,19 @@ func (ctrl *QuotationController) CreateQuotation(c *fiber.Ctx) error {
 		visibleQuotationCode(quotation), quotation.SignerName, len(quotation.Items), quotation.TotalAmount,
 	))
 	ctrl.tagQuotation(c, quotation)
-	middleware.SetActivityDetail(c, map[string]any{
+	detail := map[string]any{
 		"kind":         "issue_quotation",
 		"code":         visibleQuotationCode(quotation),
 		"quotation_id": quotation.ID,
 		"total_amount": quotation.TotalAmount,
 		"items":        quotationLines(quotation),
-	})
+	}
+	// A partial issuance leaves the rest of the bill outstanding — record how much
+	// was taken so the bill's deduction line can be traced back to this save.
+	if req.BillWeight > 0 {
+		detail["bill_weight"] = req.BillWeight
+	}
+	middleware.SetActivityDetail(c, detail)
 	return response.Created(c, "Quotation created", quotation)
 }
 

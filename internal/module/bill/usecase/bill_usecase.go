@@ -426,6 +426,17 @@ func (u *billUsecase) UpdateBill(id uint, req *UpdateBillRequest) (*entity.Quota
 
 	bill.Note = req.Note
 	if len(req.Items) > 0 {
+		// A bill already partly issued carries a deduction line that only its
+		// issuance may write. Replacing the items wholesale would drop it and hand
+		// the customer back weight they have been paid for.
+		if hasSplitLine(bill.Items) {
+			return nil, errors.New("บิลนี้ออกใบไปบางส่วนแล้ว แก้รายการทั้งบิลไม่ได้ — ลบทีละรายการแทน")
+		}
+		for _, item := range req.Items {
+			if item.Weight < 0 || item.Total < 0 {
+				return nil, errors.New("น้ำหนักและยอดเงินต้องไม่ติดลบ")
+			}
+		}
 		var totalAmount float64
 		var items []entity.QuotationItem
 		for _, item := range req.Items {
@@ -495,6 +506,9 @@ func (u *billUsecase) RemoveBillItem(billID, itemID uint) (*entity.Quotation, bo
 	if bill.Status != repository.StatusPendingIssue && bill.Status != repository.StatusPendingReview {
 		return nil, false, errors.New("แก้ไขรายการได้เฉพาะบิลที่ยังไม่ปิด")
 	}
+	if err := checkRemovable(bill.Items, itemID); err != nil {
+		return nil, false, err
+	}
 	remaining, err := u.billRepo.RemoveItem(billID, itemID)
 	if err != nil {
 		return nil, false, err
@@ -510,6 +524,49 @@ func (u *billUsecase) RemoveBillItem(billID, itemID uint) (*entity.Quotation, bo
 		return nil, false, err
 	}
 	return updated, false, nil
+}
+
+func hasSplitLine(items []entity.QuotationItem) bool {
+	for _, it := range items {
+		if it.SplitBillID != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// checkRemovable guards the two ways removing a line can corrupt a partly-issued
+// bill: deleting the deduction line itself (the issued weight would come back as
+// outstanding), or deleting a sale so large that what is left goes negative —
+// the customer would then have been paid for more than they still sold, which a
+// รอออกบิล bill cannot represent. Bills never partly issued are unaffected.
+func checkRemovable(items []entity.QuotationItem, itemID uint) error {
+	if !hasSplitLine(items) {
+		return nil
+	}
+	var target *entity.QuotationItem
+	for i := range items {
+		if items[i].ID == itemID {
+			target = &items[i]
+		}
+	}
+	if target == nil {
+		return nil // not this bill's line — the repository reports it
+	}
+	if target.SplitBillID != nil {
+		return errors.New("บรรทัดตัดออกใบลบไม่ได้ — ถ้าจะแก้ ให้ดึงบิลที่ออกไปกลับมาแก้ไขแทน")
+	}
+	metal := billItemMetal(target.Metal)
+	var left float64
+	for _, it := range items {
+		if it.ID != itemID && billItemMetal(it.Metal) == metal {
+			left += it.Weight
+		}
+	}
+	if left <= 0.00005 {
+		return errors.New("ลบรายการนี้ไม่ได้ — บิลนี้ออกใบไปบางส่วนแล้ว น้ำหนักคงเหลือจะติดลบ")
+	}
+	return nil
 }
 
 func (u *billUsecase) DeleteBill(id uint) error {
